@@ -1,0 +1,10 @@
+﻿{
+  "profiles": {
+    "StartupDemo.App.WorkerServiceWithSerilog": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "DOTNET_ENVIRONMENT": "Development"
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+﻿{
+  "profiles": {
+    "StartupDemo.App.WorkerServiceWithConfiguration": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "DOTNET_ENVIRONMENT": "Development"
+      }
+    }
+  }
+}
