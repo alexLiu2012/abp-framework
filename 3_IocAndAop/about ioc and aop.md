@@ -409,9 +409,9 @@ public static class ServiceCollectionConventionRegistratioExtension
 
 abp框架扩展了服务的拦截器功能
 
-* 添加拦截器
+* 服务注册钩子
 
-  * 通过`OnRegistered()`扩展方法添加`OnServiceRegistrationContext` 
+  通过`OnRegistered()`扩展方法可以配置服务注册后的钩子`IOnServiceRegistrationContext`
 
   ```c#
   public static class ServiceCollectionRegistrationActionExtensions
@@ -424,7 +424,28 @@ abp框架扩展了服务的拦截器功能
   
   ```
 
-  * `OnServiceRegistredContext`包含拦截器集合
+  ```c#
+  public static class ServiceCollectionRegistrationActionExtensions
+  {
+      public static ServiceRegistrationActionList GetOrCreateRegistrationActionList(IServiceCollection services)
+      {
+          var actionList = ...;
+          if(actionList == null)
+          {
+              actionList = new ServiceRegistrationActionList();
+              services.AddObjectAccessor(actionList);
+          }
+          return actionList();
+      }
+  }
+  
+  ```
+
+  
+
+* 拦截器
+
+  `OnServiceRegistredContext`包含abp拦截器集合
 
   ```c#
   public class OnServiceRegistredContext : IOnServiceRegistredContext
@@ -432,10 +453,19 @@ abp框架扩展了服务的拦截器功能
       public virtual ITypList<IAbpInterceptor> Interceptors { get; }
       public virtual Type ServiceType { get; }
       public virtual Type ImplementationType { get; }
-      // ...
+      
+      public OnServiceRegistredContext(Type serviceType, [NotNull] Type implementationType)
+      {
+          ServiceType = ...;
+          ImplementationType = ...;
+          
+          Interceptors = new TypeList<IAbpInterceptor>();
+      }
   }
   
   ```
+
+  * abp 拦截器
 
   ```c#
   public abstract class AbpInterceptor : IAbpInterceptor
@@ -452,73 +482,71 @@ abp框架扩展了服务的拦截器功能
   }
   ```
 
-  * 适配成Castle.Core的动态代理
+  * 封装了 Castle.Core 
 
-    * 适配 castle_interceptor
+  ```c#
+  public class CastleAsyncAbpInterceptorAdapter<IInterceptor> : AsyncInterceptorBase where IInterceptor : IAbpInterceptor
+  {
+      private readonly TInterceptor _abpInterceptor;
+      
+      public CastleAsyncAbpInterceptorAdapter(IInterceptor abpInterceptor)
+      {
+          _abpInterceptor = abpInterceptor;
+      }
+      
+      protected override async Task InterceptAsync(/**/) 
+      {
+          // _abpInterceptor.InterceptAsync(...)
+      }
+      protected override async Task<TResult> InterceptAsync<TResult>(/**/) 
+      {
+          // _abpInterceptor.InterceptAsync(...)
+      }
+  }
+  
+  ```
 
-    ```c#
-    public class CastleAsyncAbpInterceptorAdapter<IInterceptor> : AsyncInterceptorBase where IInterceptor : IAbpInterceptor
-    {
-        private readonly TInterceptor _abpInterceptor;
-        
-        public CastleAsyncAbpInterceptorAdapter(IInterceptor abpInterceptor)
-        {
-            _abpInterceptor = abpInterceptor;
-        }
-        
-        protected override async Task InterceptAsync(/**/) 
-        {
-            // _abpInterceptor.InterceptAsync(...)
-        }
-        protected override async Task<TResult> InterceptAsync<TResult>(/**/) 
-        {
-            // _abpInterceptor.InterceptAsync(...)
-        }
-    }
-    
-    ```
+  ```c#
+  public class CastleAbpMethodInvocationAdapter : CastleAbpMethodInvocationAdapterBase, IAbpMethodInvation
+  {
+      protected IInvocationProceedInfo ProceedInfo { get; }
+      protected Func<IInvocation, IInvocationProceedInfo, Task> Proceed { get; }
+      
+      public CastleAbpMethodInvocationAdapter(
+      	IInvocation invocation,
+      	IInvocationProceedInfo proceedInfo,
+      	Func<...> proceed) : base(invocation)
+      {
+          ProceedInfo = proceedInfo;
+          Proceed = proceed;
+      }
+      
+      public override async Task ProceedAsync()
+      {
+          // Proceed(invocation, ProceedInfo)
+      }
+  }
+  
+  ```
 
-    * 适配 castle_methodInvocation
+  ```c#
+  public class AbpAsyncDeterminationInterceptor<TInterceptor> : AsyncDeterminationInterceptor where TInterceptor : IAbpInterceptor
+  {
+      // adapt a castle_interceptor
+      // base(castle_interceptor)
+  }
+  
+  ```
 
-    ```c#
-    public class CastleAbpMethodInvocationAdapter : CastleAbpMethodInvocationAdapterBase, IAbpMethodInvation
-    {
-        protected IInvocationProceedInfo ProceedInfo { get; }
-        protected Func<IInvocation, IInvocationProceedInfo, Task> Proceed { get; }
-        
-        public CastleAbpMethodInvocationAdapter(
-        	IInvocation invocation,
-        	IInvocationProceedInfo proceedInfo,
-        	Func<...> proceed) : base(invocation)
-        {
-            ProceedInfo = proceedInfo;
-            Proceed = proceed;
-        }
-        
-        public override async Task ProceedAsync()
-        {
-            // Proceed(invocation, ProceedInfo)
-        }
-    }
-    
-    ```
-
-    * 适配 castle_determination_interceptor
-
-    ```c#
-    public class AbpAsyncDeterminationInterceptor<TInterceptor> : AsyncDeterminationInterceptor where TInterceptor : IAbpInterceptor
-    {
-        // adapt a castle_interceptor
-        // base(castle_interceptor)
-    }
-    
-    ```
+* 默认情况下DI是不执行`IOnServiceRegistredContext`的，它需要Autofac来执行
 
 ##### 1.3 autofac
 
 abp框架不依赖ioc实现，默认使用microsoft.extensions.dependencyInjection。
 
 但是使用autofac可以扩展更多功能，例如属性注入、拦截器
+
+**注意：不使用autofac是也可以注册拦截器，但不起作用，也不会报错！！**
 
 * 模块依赖`AbpAutofacModule`
 
@@ -695,13 +723,13 @@ abp框架不依赖ioc实现，默认使用microsoft.extensions.dependencyInjecti
       	IModuleContainer moduleContainer,
       	ServiceRegistrationActionList registrationActionList)
       {
-          var serviceType = ...;
+          var serviceType = ...;		// 必须有service_type
           if(serviceType == null)
           {
               return registrationBuilder;
           }
           
-          var implementationType = ...;
+          var implementationType = ...;	// 必须有implementation_type
           if(implementationType == null)
           {
               return registrationBuilder;
@@ -716,8 +744,6 @@ abp框架不依赖ioc实现，默认使用microsoft.extensions.dependencyInjecti
   }
   
   ```
-
-  
 
 #### 2. how to use
 
@@ -761,19 +787,57 @@ abp框架不依赖ioc实现，默认使用microsoft.extensions.dependencyInjecti
 
 * 在module的`PreConfigureService()`方法中注册拦截器Action
 
-  ```c#
-  public class MyModule : AbpModule
-  {
-      public override void PreConfigureService(ServiceConfigurationContext context)
-      {
-          context.Services.OnRegistred(...)
-          {
-              // ...
-          }
-      }
-  }
+  * 定义拦截器
+
+    ```c#
+    public class MyInterceptor : AbpInterceptor, ITransientDependency
+    {
+        public override async Task InterceptAsync(IAbpMethodInvocation invocation)
+        {
+            
+        }
+    }
+    ```
+
+  * 注册拦截器
+
+    ```c#
+    public class MyModule : AbpModule
+    {
+        public override void PreConfigureService(ServiceConfigurationContext context)
+        {
+            context.Services.OnRegistred(IOnServiceRegistredContext registrationContext)
+            {
+                registrationContext.Interceptors.Add<MyInterceptor>();
+            }
+        }
+    }
+    
+    ```
+
+  * best practice
+
+    定义拦截器注册方法
+
+    ```c#
+    public class MyInterceptor : AbpInterceptor, ITransientDependency
+    {
+        // intercept_async
+        
+        public static void Register(IOnServiceRegistrationContext context)
+        {
+            if(...)
+            {
+                context.Interceptors.Add<MyInterceptor>();
+            }
+        }
+    }
+    
+    ```
+
+    
+
   
-  ```
 
   
 
