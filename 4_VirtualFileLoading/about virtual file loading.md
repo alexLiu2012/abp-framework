@@ -267,7 +267,7 @@ abp框架扩展了microsoft.extensions.fileprovider，可以抽象访问文件�
         
         public static async Task<byte[]> ReadBytesAsync(this IFileInfo fileInfo) { /**/ }
         public static async Task<byte[]> ReadBytesAsync(this IFileInfo fileInfo,
-                                                  Encoding encoding) { /**/ }            
+                                                        Encoding encoding) { /**/ }   
     }
     
     ```
