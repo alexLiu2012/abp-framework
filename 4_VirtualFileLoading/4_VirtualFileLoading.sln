@@ -3,7 +3,25 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 16
 VisualStudioVersion = 16.0.30204.135
 MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VirtualFileDemo.ConsoleApp", "VirtualFileDemo.ConsoleApp\VirtualFileDemo.ConsoleApp.csproj", "{A7A31FE3-F80E-49DB-9CD4-70135B4957DF}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VirtualFileDemo.Common", "VirtualFileDemo.Common\VirtualFileDemo.Common.csproj", "{FB773CFA-CF35-474E-82F8-EF8BA6441279}"
+EndProject
 Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A7A31FE3-F80E-49DB-9CD4-70135B4957DF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A7A31FE3-F80E-49DB-9CD4-70135B4957DF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A7A31FE3-F80E-49DB-9CD4-70135B4957DF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A7A31FE3-F80E-49DB-9CD4-70135B4957DF}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FB773CFA-CF35-474E-82F8-EF8BA6441279}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FB773CFA-CF35-474E-82F8-EF8BA6441279}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FB773CFA-CF35-474E-82F8-EF8BA6441279}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FB773CFA-CF35-474E-82F8-EF8BA6441279}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection

@@ -153,7 +153,7 @@ abp框架扩展了microsoft.extensions.fileprovider，可以抽象访问文件�
           
           var fileProvider = new PhysicalFileProvider(root, exclusionFilters);
           
-          list.Add(new PhysicalVirtualFileSetInfo(/**/));
+          list.Add(new PhysicalVirtualFileSetInfo(fileProvider, root));
       }
   }    
   
@@ -280,16 +280,40 @@ abp框架扩展了microsoft.extensions.fileprovider，可以抽象访问文件�
 
   * embedded file
 
+    适用于不变的、经常共享的资源
+
     * 添加 microsoft.extensions.fileprovider.embedded，
 
     * 在 .csproj 文件中添加
 
       ```c#
-      <PropertyConfig>
+      <PropertyGroup>
           <GenerateEmbeddedFileManifest>true</GenerateEmbeddedFileManifest>
-      </PropertyConfig>
+      </PropertyGroup>
       ```
 
   * physical file
 
+    适用于配置文件
+
 * 注入`IVirtualFileProvider`
+
+  * 获取`IFileInfo`，使用它的扩展方法
+
+* conflict
+
+  `IFileProvider`是 key/value 集合，key 可能重复，从而导致 conflict
+
+  * 对于 manifest file
+
+    从 程序集 出发的根节点，key 是相对程序集内的path，即ide看到的；
+
+  * 对于physical file
+
+    配置options时指定了root，key 是root后的实际路径
+
+  * 相同 key 的 file_info 会根据模块加载顺序覆盖
+
+  * best practice：定义不同的 key
+
+  
