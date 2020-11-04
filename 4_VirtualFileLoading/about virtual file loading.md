@@ -291,6 +291,8 @@ abp框架扩展了microsoft.extensions.fileprovider，可以抽象访问文件�
           <GenerateEmbeddedFileManifest>true</GenerateEmbeddedFileManifest>
       </PropertyGroup>
       ```
+      
+    * 指定 namespace_base 而保持剩余部分，可以减少conflict
 
   * physical file
 
@@ -316,4 +318,6 @@ abp框架扩展了microsoft.extensions.fileprovider，可以抽象访问文件�
 
   * best practice：定义不同的 key
 
+    
+  
   
