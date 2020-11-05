@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>netcoreapp3.1</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Remove="baseResources\de.json" />
+    <None Remove="baseResources\en.json" />
+    <None Remove="resources\de.json" />
+    <None Remove="resources\en.json" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="baseResources\de.json" />
+    <EmbeddedResource Include="baseResources\en.json" />
+    <EmbeddedResource Include="resources\en.json" />
+    <EmbeddedResource Include="resources\de.json" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Volo.Abp.Localization" Version="3.3.1" />
+  </ItemGroup>
+
+</Project>
