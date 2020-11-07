@@ -17,16 +17,15 @@ abp框架集成了localization
   ```
 
   * `LocalizableString`是实现
-
   * `FixedLocalizableString`是另一种实现，即 key、value都是自身的 localized_string，
-
-    用于在开发环境使用没有完成的 localized_string（display name）
 
 * 定义和标记 localizing 资源
 
   * 定义 resource class
 
     plain class类型，空定义，作为泛型参数在逻辑上聚合相关 localizing_string
+
+    **一个 resource class对应一中 language ，且仅能被注册一次**
 
     module可以定义自己的 resource_class
 
@@ -88,9 +87,51 @@ abp框架集成了localization
       
       ```
 
+* `AbpDictionaryBasedStringLocalizer`
+
+  abp框架扩展的`IStringLocalizer`实现
+
+  ```c#
+  public class AbpDictionaryBasedStringLocalizer : IStringLocalizer, IStringLocalizerSupportsInheritance
+  {
+      public LocalizationResource Resource { get; }
+      public List<IStringLocalizer> BaseLocalizer { get; }
+      
+      public virtual LocalizedString this[string name] => GetLocalizedString(name);
+      public virtual LocalizedString this[string name, params object[] arguments] = GetLocalizedStringFormatted(name, arguments);
+      
+      public AbpDictionaryBasedStringLocalizer(LocalizationResource resource, List<IStringLocalizer> baseLocalizer)
+      {
+          Resource = resource;
+          BaseLocalizer = baseLocalizer;
+      }
+      
+      // ....
+  }
+  
+  ```
+
+  * 获取 localized_string
+
+    ```c#
+    public virtual LocalizedString GetLocalizedString(string name)
+    {
+        return GetLocalizedString(string name, string cultureName);
+    }
+    
+    public virtual LocalizedString GetLocalizedString(string name, string cultureName)
+    {
+        // ...
+    }
+    ```
+
+    * 根据`CurrentUICulture`获取 localized_string
+    * 如果没有对应的string, 向 base_localizer 中检索
+    * 还是没有，返回 string 本身
+
 * 注册`IStringLocalizer`
 
-  在`AbpLocalizationModule`模块中替换 ms 服务
+  在`AbpLocalizationModule`模块中替换 ms_localizer_factory 服务，用来解析`IStringLocalizer`
 
   ```c#
   [DependsOn(typeof(AbpLocalizationAbstractModule))]
@@ -208,9 +249,7 @@ abp框架集成了localization
             }
             
             // 加载 base_resource_type
-            AddBaseResourceTypes();
-            
-            AddBaseResourceTypes();
+            AddBaseResourceTypes();                
         }
     }
     
@@ -241,20 +280,20 @@ abp框架集成了localization
 
     * 添加 virtual_json_contributor
 
+      **添加 virtual_path （文件夹）下面的 *.json 的内容到 resource**
+
       ```c#
       public static class LocalizationResourceExtensions
       {
           public static LocalizationResource AddVirtualJson(
           	[NotNull] this LocalizationResource localizationResource,
-          	[NotNull] string virtualPaht)
+          	[NotNull] string virtualPath)
           {
               // load virtual json file to LocalizationResource
           }                           
       }
       
       ```
-
-      **注意：json文件的路径必须“/”且不能有“.json"扩展名**
 
     * 添加 base_type_resource
 
