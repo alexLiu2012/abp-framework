@@ -1,0 +1,10 @@
+﻿{
+  "profiles": {
+    "DistributedCachingDemo.WorkServiceApp": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "DOTNET_ENVIRONMENT": "Development"
+      }
+    }
+  }
+}

@@ -443,8 +443,31 @@ abp内嵌了序列化器，扩展了泛型distributed cache
           // ...
           "Redis": {
               "IsEnabled": "true",	// 使能
-              "Configuration": "127.0.0.1"	// redis地址
+              "Configuration": "127.0.0.1:4367"	// redis地址
           }
+      }
+      ```
+
+    * 配置 ms redis cache options 重置redis 配置
+
+      ```c#
+      // in microsoft.extensions.caching.redis
+      public clas RedisCacheOptions
+      {
+          public string Configuration { get;set; }	// 连接字符串
+          public string InstanceName { get;set; }		// 实例名，添加在key的前缀
+          
+          public ConfigurationOptions ConfigurationOptions { get; set; }	// stack exchange redis 配置项
+      }
+      
+      ```
+
+      ```c#
+      // in stack exchange redis
+      public sealed class ConfigurationOptions
+      {
+          // ...
+          // 看 stack exchange redis 文档的解释
       }
       ```
 
@@ -457,6 +480,7 @@ abp内嵌了序列化器，扩展了泛型distributed cache
 best practices:
 
 * 依赖`AbpCachingStackExchangeRedisModule`模块
-* 使用redis
+* 使用redis（用configuration文件配置  ms redis cache options）
   * 如果使用redis，配置文件中的 enable = true
   * 不使用redis，配置文件中的 enable = false
+* 重写 ms redis cache（如果需要）
