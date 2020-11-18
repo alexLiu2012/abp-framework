@@ -391,11 +391,12 @@ abp框架实现了event_bus，分为进程内的 local bus 和 微服务的 dist
 
   #### 2. how to use
 
-  * 依赖`AbpEventBusModule`，和`AbpAutofac`的nuget包
-  * 定义 TEvent，THandler；THandler要自动注册（实现 IxxxDependency接口）
-  * THandler将自动注入`AbpLocalEventBusOptions`
-  * 可以手动添加 THandler
+  * 依赖`AbpEventBusModule`和`AbpAutofac`，`AbpAppliation`需要使用autofac，因为需要使用拦截器注册handler到options
+  * 定义TEvent，也就是eventData的类型限定，它是一个poco类型
+  * 定义THandler，实现`ILocalEventBus<TEvent>`接口；如果要自动注入，还需要实现IxxxDependency接口
+  * 也可以手动添加 THandler
   * publish event
+  * 自定义service（controller）中可以注入`ILocalEventBus`，也可以通过属性注入，构造函数中赋值`NullLocalEventBus`；注意属性必须是public
   * publish event
 
   

@@ -97,6 +97,16 @@ worker是实现了 microsoft IHostedService 的服务，做了一些封装
   
   ```
 
+  * backgroundworker base
+
+    ```c#
+    asdfadf
+    ```
+
+    start, stop 方法使用了logger，如果没有指定会报异常；可以使用autofac的属性注入
+
+    在quartz中因为没有使用start， stop方法，则不需要
+
   * 上下文参数
 
     ```c#
@@ -769,8 +779,27 @@ public class QuartzBackgroundWorkerManager : IBackgroundWorkerManager, ISingleto
 
 #### 2. how to use
 
-* periodic开机注册，不能停止，可以直接注入IHostedService，模块作用不大
-* 集成quartz的模块，自动注册
+##### 2.1 background worker
+
+* 依赖`AbpBackgroundWorkerModule`
+* 获取 `IBackgroundWorkerManager`并添加`IBackgroundWorker`
+
+* 如果使用`PeriodicBackgroundWorkerBase`或者`AsyncPeriodicBackgroundWorkerBase`，
+
+  * `BackgroundBase`
+  * 依赖 autofac module，因为`BackgroundWorkerBase`使用了属性注入；
+
+  * AbpTimer是threading module中自动注入的，而 background worker 依赖了 threading module；
+
+    timer在构造时指定了period，后期不能修改；可以通过解析服务从configuration获取，或者pre_configuration解析参数，但是麻烦
+
+  * 需要在 OnApplication方法中调用 AddBackgroundWorker
+  * 或者手动添加
+
+##### 2.2 quartz background worker
+
+* 依赖`AbpQuartzBackgroundWorkersQuartzModule`
+* 
 
 
 
