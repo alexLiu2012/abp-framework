@@ -177,6 +177,7 @@ internal class EmailSettingProvider : SettingDefinitionProvider
                 L("DisplayName:Abp.Mailing.Smtp.Port"), 
                 L("Description:Abp.Mailing.Smtp.Port")));
     }
+}
             
 ```
 
