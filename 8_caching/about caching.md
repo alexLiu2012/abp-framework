@@ -483,4 +483,5 @@ best practices:
 * 使用redis（用configuration文件配置  ms redis cache options）
   * 如果使用redis，配置文件中的 enable = true
   * 不使用redis，配置文件中的 enable = false
-* 重写 ms redis cache（如果需要）
+* 重写 ms redis cache options（如果需要）
+
