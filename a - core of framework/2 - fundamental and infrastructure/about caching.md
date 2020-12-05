@@ -16,6 +16,8 @@
 
 #### 2.1 abp cache 接口
 
+* abp框架重新定义了`IDistributedCache<>`和`IDistributedCache<,>`接口
+
 ##### 2.1.1 generic key 接口
 
 ```c#
@@ -120,6 +122,10 @@ public interface IDistributedCache<TCacheItem>
 ```
 
 #### 2.2 abp distributed cache
+
+* 在abp框架定义的 cache 接口的实现中：
+  * 包裹了 .net core cache 接口，即扩展了.net core cache，
+  * 包含 serializer，可以直接存、取 string 类型
 
 ##### 2.2.1 初始化
 
