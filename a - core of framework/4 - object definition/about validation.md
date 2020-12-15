@@ -12,6 +12,19 @@
 * abp 框架扩张了 ms `System.ComponentModel.DataAnnotations`，实现了自动验证，
 * 集成了`FluentValidation`
 
+#### 1.1 how designed
+
+* object valid contributor 是提供验证的具体底层服务
+  * ms data annotation contributor，验证`ValidAttribute`特性和`IValidObject`接口标记
+  * fluent contributor
+* object validator 是 abp 定义的提供验证服务的服务接口，可以手动 valid
+* 使用拦截器自动验证
+  * 被验证的 class 要实现`IValidationEnable`接口
+  * 使用`EnableValidationAttribute`和`DisableValidationAttribute`标记（class 或者 member）是否需要验证
+  * 拦截器使用 method validator，它包裹了`IObjectValidator`
+* 集成了autofac，自动扫描所有实现`IValidator`接口的 entity（class）
+  * 参考 fluent validation
+
 ### 2. details
 
 #### 2.1 validation
@@ -97,7 +110,7 @@ public class DataAnnotationObjectValidationContributor
         {
             AddPropertyErrors(validatingObject, property, errors);
         }
-        // 验证 iobjectableObject
+        // 验证 iValidatableObject
         if (validatingObject is IValidatableObject validatableObject)
         {
             errors.AddRange(
@@ -340,7 +353,7 @@ public class ObjectValidator : IObjectValidator, ITransientDependency
             }
         }
         
-        /* 使用 ms validation */        
+        // 使用 valid contributor 验证     
         var context = new ObjectValidationContext(validatingObject);        
         using (var scope = ServiceScopeFactory.CreateScope())
         {
@@ -380,39 +393,12 @@ public class AbpValidationOptions
 
 ```
 
-##### 2.3.3 enable/disable valid
-
-###### 2.3.3.1 enable attribute
-
-```c#
-[AttributeUsage(AttributeTargets.Method)]
-public class EnableValidationAttribute : Attribute
-{    
-}
-
-```
-
-###### 2.3.3.2 disable attribute
-
-```c#
-[AttributeUsage(AttributeTargets.Method | 
-                AttributeTargets.Class | 
-                AttributeTargets.Property)]
-public class DisableValidationAttribute : Attribute
-{    
-}
-
-```
-
-#### 2.4 auto valid
-
-* abp框架通过注册拦截器实现自动验证
-
-##### 2.4.1 method invocation validator
+#### 2.4 method invocation validator
 
 * 适配拦截器的 validator
+* 包裹`IObjectValidator`
 
-###### 2.4.1.1 接口
+##### 2.4.1 接口
 
 ```c#
 public interface IMethodInvocationValidator
@@ -422,7 +408,7 @@ public interface IMethodInvocationValidator
 
 ```
 
-###### 2.4.1.2 method validation context
+##### 2.4.2 method validation context
 
 ```c#
 public class MethodInvocationValidationContext : AbpValidationResult
@@ -443,9 +429,9 @@ public class MethodInvocationValidationContext : AbpValidationResult
 
 ```
 
-##### 2.4.2 实现
+##### 2.4.3 实现
 
-###### 2.4.2.1 method  validator
+###### 2.4.3.1 intialize
 
 ```c#
 public class MethodInvocationValidator 
@@ -455,8 +441,16 @@ public class MethodInvocationValidator
     public MethodInvocationValidator(IObjectValidator objectValidator)
     {
         _objectValidator = objectValidator;
-    }
+    }    
+}
 
+```
+
+###### 2.4.3.2 validate
+
+```c#
+public class MethodInvocationValidator 
+{
     public virtual void Validate(MethodInvocationValidationContext context)
     {
         Check.NotNull(context, nameof(context));
@@ -470,7 +464,7 @@ public class MethodInvocationValidator
         {
             return;
         }
-        
+        // 判断为 disable
         if (IsValidationDisabled(context))
         {
             return;
@@ -497,10 +491,9 @@ public class MethodInvocationValidator
         }
     }        
 }
-
 ```
 
-###### 2.4.2.1 method validator did
+###### 2.4.3.3 is validation disable
 
 ```c#
 public class MethodInvocationValidator 
@@ -576,6 +569,32 @@ public class MethodInvocationValidator
 
 ```
 
+##### 2.4.4 enable/disable valid
+
+* 标记是否使用 validation
+
+###### 2.4.4.1 enable attribute
+
+```c#
+[AttributeUsage(AttributeTargets.Method)]
+public class EnableValidationAttribute : Attribute
+{    
+}
+
+```
+
+###### 2.4.4.2 disable attribue
+
+```c#
+[AttributeUsage(AttributeTargets.Method | 
+                AttributeTargets.Class | 
+                AttributeTargets.Property)]
+public class DisableValidationAttribute : Attribute
+{    
+}
+
+```
+
 #### 2.5 validation intercept
 
 * abp框架可以自动验证
@@ -646,9 +665,9 @@ public interface IValidationEnabled
 
 ```
 
-#### 2.5 注册 validator
+#### 2.6 注册 validator
 
-##### 2.5.1 validation 模块
+##### 2.6.1 validation 模块
 
 ```c#
 [DependsOn(typeof(AbpValidationAbstractionsModule),
@@ -658,7 +677,9 @@ public class AbpValidationModule : AbpModule
     // 注册 validator 拦截器
     public override void PreConfigureServices(ServiceConfigurationContext context)
     {
-        context.Services.OnRegistred(ValidationInterceptorRegistrar.RegisterIfNeeded);
+        context.Services.OnRegistred(
+            ValidationInterceptorRegistrar.RegisterIfNeeded);
+        
         AutoAddObjectValidationContributors(context.Services);
     }
     
@@ -678,7 +699,8 @@ public class AbpValidationModule : AbpModule
         services.Configure<AbpValidationOptions>(options =>
             {
                 // 向 abp validation options 中注册 validation_contributors
-                options.ObjectValidationContributors.AddIfNotContains(contributorTypes);
+                options.ObjectValidationContributors
+                    .AddIfNotContains(contributorTypes);
             });
     }
     
@@ -720,7 +742,8 @@ public class AbpFluentValidationModule : AbpModule
 ###### 2.5.2.2 fluent validation conventional registrar
 
 ```c#
-public class AbpFluentValidationConventionalRegistrar : ConventionalRegistrarBase
+public class AbpFluentValidationConventionalRegistrar 
+    : ConventionalRegistrarBase
 {
     public override void AddType(IServiceCollection services, Type type)
     {

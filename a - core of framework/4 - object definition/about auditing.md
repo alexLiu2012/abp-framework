@@ -16,7 +16,20 @@
 
 #### 1.2 how designed
 
+* auditLogInfo 是 auditing log 的模型，包含
+  * application name, type ......
+  * auditLogAction, 记录 action 信息
+  * entityChangeInfo，记录 entity changes 信息
 
+* audit helper 用于创建 auditLogInfo
+  * audit log contributor 提供了 audit log 的底层服务
+* audit manager 管理 auditLogInfo 的持久化
+  * audit store 是存储的具体实现者，
+  * 使用 audit serializer 序列化 audit info
+* 在 asp.net core mvc audit log 中间件中使用自动注册，调用 interceptor
+* 还可以自动审计 entity
+  * 实现特定 audit object 接口
+  * 在 save async 方法时调用 audit property setter
 
 ### 2. details
 
