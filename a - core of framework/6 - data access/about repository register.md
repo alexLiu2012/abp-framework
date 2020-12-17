@@ -233,19 +233,7 @@ public abstract class AbpCommonDbContextRegistrationOptions
         
         CustomRepositories = new Dictionary<Type, Type>();
         ReplacedDbContextTypes = new List<Type>();
-    }
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
+    }                                                
 }
 
 ```
@@ -420,7 +408,8 @@ public abstract class AbpCommonDbContextRegistrationOptions
         {
             return false;
         }
-        // 如果 custom repos 中不包含 entity type，False
+        // 如果 custom repos 中包含 entity type，False
+        // 因为 registrar.addRepositories 方法会注册 custom repos
         if (CustomRepositories.ContainsKey(entityType))
         {
             return false;

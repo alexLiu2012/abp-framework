@@ -22,13 +22,14 @@ abp框架实现了按照db_context自动注入
           Options = options;
       }
       
-      public virtual void AddRepositores()
+      public virtual void AddRepositories()
       {
           // 添加自定义repository
           foreach(var customRepository in Options.CustomRepositories)
           {
               Options.Services.AddDefaultRepository(
-                  customRepository.Key, customRepository.Value);
+                  customRepository.Key, 
+                  customRepository.Value);
           }
           // 添加默认repository（聚合根）
           if(Options.RegisterDefaultRepositories)
@@ -40,7 +41,8 @@ abp框架实现了按照db_context自动注入
       protected virtual void RegisterDefaultRepositories()
       {
           // 遍历 get_entities 方法获取的 db_context 内包含的全部实体
-          foreach(var entityType in GetEntityTypes(Options.OriginalDbContextType))
+          foreach(var entityType in GetEntityTypes(
+              Options.OriginalDbContextType))
           {            
               if(!ShouldRegisterDefaultRepositoryFor(entityType))
               {
@@ -55,7 +57,8 @@ abp框架实现了按照db_context自动注入
       protected virtual void RegisterDefaultRepository(Type entityType)
       {
           // 注册 entity 对应的 repository
-          Options.Services.AddDefaultRepository(entityType, 
+          Options.Services.AddDefaultRepository(
+              entityType, 
           	GetDefaultRepositoryImplementationType(entityType));
       }
   }
@@ -76,12 +79,15 @@ abp框架实现了按照db_context自动注入
         {
             /* for IReadOnlyBasicRepository<TEntity> */
             // 获取 repository 接口
-            var readOnlyBasicRepositoryInterface = typeof(IReadOnlyBasicRepository<>).MakerGenericType(entityType);
+            var readOnlyBasicRepositoryInterface = typeof(IReadOnlyBasicRepository<>)
+                .MakerGenericType(entityType);
             // 判断接口并注入服务
             if(readOnlyBasicRepositoryInterface
-               .IsAssignableFrom(repositoryImplementationType))
+                   .IsAssignableFrom(repositoryImplementationType))
             {
-                services.TryAddTransient(readOnlyBasicRepositoryInterface, repositoryImplementationType);
+                services.TryAddTransient(
+                    readOnlyBasicRepositoryInterface, 
+                    repositoryImplementationType);
             }
             
             // 其他接口类似 。。。
