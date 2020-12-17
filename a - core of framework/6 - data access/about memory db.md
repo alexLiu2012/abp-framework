@@ -8,11 +8,30 @@
 
 ### 1. about
 
+* abp框架提供了 memory db 功能，用于测试
 
+#### 1.1 how designed
+
+##### 1.1.1 自动注册 memory db repo
+
+* 继承 repo register base 并实现功能
+  * get entity types（用于 entity 自动创建 repo）
+  * get repo type（用于创建 repo）
+* 继承 common dbContext register options
+* service 中添加和配置 common dbContext register options
+
+##### 1.1.2 memory db
+
+* memory provider 获取 current  tenant 中的 database api
+* 如果没有 database api，使用 memory manager 创建 database
+* memory database 获取 memory collection
+* memory collection 中包含 memory serializer，用于序列化
 
 ### 2. details
 
 #### 2.1 注册 memory db
+
+* 实现 memory db 自动注册
 
 ##### 2.1.1 memory dbContext register options
 
@@ -55,13 +74,16 @@ public class MemoryDbRepositoryRegistrar
     {
     }
     
+    // 重写 get entity types，
+    // 从 memory db context 中 
     protected override IEnumerable<Type> GetEntityTypes(Type dbContextType)
     {
         var memoryDbContext = (MemoryDbContext)Activator
             .CreateInstance(dbContextType);
         return memoryDbContext.GetEntityTypes();
     }
-    
+    // 重写 get repo type，
+    // 为 entity 创建 memoryDb<TContext,TEntity>
     protected override Type GetRepositoryType(
         Type dbContextType, 
         Type entityType)
@@ -69,7 +91,8 @@ public class MemoryDbRepositoryRegistrar
         return typeof(MemoryDbRepository<,>)
             .MakeGenericType(dbContextType, entityType);
     }
-    
+    // 重写 get repo type，
+    // 为 entity 创建 memoryDb<TContext,TEntity,TKey>
     protected override Type GetRepositoryType(
         Type dbContextType, 
         Type entityType, 
@@ -82,7 +105,7 @@ public class MemoryDbRepositoryRegistrar
 
 ```
 
-##### 2.1.3 add memory db
+##### 2.1.3 add memory db (context)
 
 ```c#
 public static class AbpMemoryDbServiceCollectionExtensions
@@ -94,18 +117,20 @@ public static class AbpMemoryDbServiceCollectionExtensions
         		optionsBuilder = null)            
         	where TMemoryDbContext : MemoryDbContext
     {
+        // 创建 memory db context 并配置
         var options = new AbpMemoryDbContextRegistrationOptions(
             typeof(TMemoryDbContext), 
             services);
         optionsBuilder?.Invoke(options);
         
+        // 注册 TMemoryContext 并暴露为 default repo context type
         if (options.DefaultRepositoryDbContextType != typeof(TMemoryDbContext))
         {
             services.TryAddSingleton(
                 options.DefaultRepositoryDbContextType, 
                 sp => sp.GetRequiredService<TMemoryDbContext>());
         }
-        
+        // 用 TMemoryContext 替代 options.ReplaceContextType 注册并暴露
         foreach (var dbContextType in options.ReplacedDbContextTypes)
         {
             services.Replace(
@@ -114,6 +139,7 @@ public static class AbpMemoryDbServiceCollectionExtensions
                     sp => sp.GetRequiredService<TMemoryDbContext>()));
         }
         
+        // 创建 memory db registrar 并加载 repos
         new MemoryDbRepositoryRegistrar(options).AddRepositories();
         
         return services;
@@ -129,6 +155,7 @@ public abstract class MemoryDbContext : ISingletonDependency
 {
     private static readonly Type[] EmptyTypeList = new Type[0];
     
+    // 需要重写
     public virtual IReadOnlyList<Type> GetEntityTypes()
     {
         return EmptyTypeList;
@@ -138,6 +165,8 @@ public abstract class MemoryDbContext : ISingletonDependency
 ```
 
 #### 2.3 memory db repository
+
+* memory db repo 的实现
 
 ##### 2.3.1 接口
 
@@ -204,22 +233,12 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity>
     }
         
     
-    protected virtual bool IsHardDeleted(TEntity entity)
-    {
-        // 如果 uow.current.items 中不包含 hard deleted entities 集合，
-        // 不支持记录 hard deleted entity，False
-        if (!(UnitOfWorkManager?.Current?.Items
-              .GetOrDefault(UnitOfWorkItemNames.HardDeletedEntities) is 
-                  HashSet<IEntity> hardDeletedEntities))
-        {
-            return false;
-        }
-        // hardDeletedEntities 是否包含 entity
-        return hardDeletedEntities.Contains(entity);
-    }                                                                                                             
+                                      
 ```
 
 ###### 2.3.2.1 property audit
+
+* 设置 audit property
 
 ```c#
 public class MemoryDbRepository<TMemoryDbContext, TEntity> 
@@ -243,6 +262,8 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity>
 ```
 
 ###### 2.3.2.2 entity change event
+
+* 触发 entity change event，实现自动审计事件
 
 ```c#
 public class MemoryDbRepository<TMemoryDbContext, TEntity> 
@@ -276,6 +297,8 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity>
 
 ###### 2.3.2.3 trigger domain event
 
+* domain event
+
 * entity 必须实现 `IGeneratesDomainEvent`激活 domain event 功能
 
 ```c#
@@ -284,11 +307,14 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity>
     protected virtual async Task TriggerDomainEventsAsync(object entity)
     {
         var generatesDomainEventsEntity = entity as IGeneratesDomainEvents;
+        
+        // 如果没有实现 IGeneratesDomainEvent，忽略
         if (generatesDomainEventsEntity == null)
         {
             return;
         }
         
+        // 发布 local event
         var localEvents = generatesDomainEventsEntity
             .GetLocalEvents()?.ToArray();
         if (localEvents != null && localEvents.Any())
@@ -303,7 +329,7 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity>
             
             generatesDomainEventsEntity.ClearLocalEvents();
         }
-        
+        // 发布 distributed event
         var distributedEvents = generatesDomainEventsEntity
             .GetDistributedEvents()?.ToArray();
         if (distributedEvents != null && distributedEvents.Any())
@@ -337,6 +363,7 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity>
     
     protected virtual void TrySetGuidId(IEntity<Guid> entity)
     {
+        // 如果 id 不为 null，即设置过 id，忽略
         if (entity.Id != default)
         {
             return;
@@ -347,11 +374,16 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity>
             () => GuidGenerator.Create(),
             true);
     }
+    
     protected virtual async Task ApplyAbpConceptsForAddedEntityAsync(TEntity entity)
     {
+        // set id
         CheckAndSetId(entity);
+        // 设置 audit property
         SetCreationAuditProperties(entity);
+        // 发布 entity create event（create）
         await TriggerEntityCreateEvents(entity);
+        // 发布 domain event
         await TriggerDomainEventsAsync(entity);
     }
                 
@@ -376,8 +408,11 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity>
 {
     protected virtual async Task ApplyAbpConceptsForDeletedEntityAsync(TEntity entity)
     {
+        // 设置 audit property
         SetDeletionAuditProperties(entity);
+        // 发布 entity change event（delete）
         await TriggerEntityDeleteEventsAsync(entity);
+        // 发布 domain event
         await TriggerDomainEventsAsync(entity);
     }
     
@@ -392,19 +427,36 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity>
             await DeleteAsync(entity, autoSave, cancellationToken);
         }
     }
-            
+        
+    protected virtual bool IsHardDeleted(TEntity entity)
+    {
+        // 如果 uow.current.items 中不包含 hard deleted entities 集合，
+        // 不支持记录 hard deleted entity，False
+        if (!(UnitOfWorkManager?.Current?.Items
+              .GetOrDefault(UnitOfWorkItemNames.HardDeletedEntities) is 
+                  HashSet<IEntity> hardDeletedEntities))
+        {
+            return false;
+        }
+        // hardDeletedEntities 是否包含 entity
+        return hardDeletedEntities.Contains(entity);
+    }                                                                           
+    
     public async override Task DeleteAsync(
         TEntity entity,
         bool autoSave = false,
         CancellationToken cancellationToken = default)
     {
         await ApplyAbpConceptsForDeletedEntityAsync(entity);
-        
-        if (entity is ISoftDelete softDeleteEntity && !IsHardDeleted(entity))
+        // 如果支持 soft delete（实现 ISoftDelete 接口），
+        // 标记 soft deleted
+        if (entity is ISoftDelete softDeleteEntity && 
+            !IsHardDeleted(entity))
         {
             softDeleteEntity.IsDeleted = true;
             Collection.Update(entity);
         }
+        // 不支持 soft delete，直接删除
         else
         {
             Collection.Remove(entity);
@@ -424,22 +476,27 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity>
         bool autoSave = false,
         CancellationToken cancellationToken = default)
     {
-        SetModificationAuditProperties(entity);
-        
-        if (entity is ISoftDelete softDeleteEntity && softDeleteEntity.IsDeleted)
+        // 设置 audit property
+        SetModificationAuditProperties(entity);        
+        // 如果被标记为 soft deleted
+        if (entity is ISoftDelete softDeleteEntity && 
+            softDeleteEntity.IsDeleted)
         {
+            // 设置 audit property
             SetDeletionAuditProperties(entity);
+            // 发布 entity change event（delete）
             await TriggerEntityDeleteEventsAsync(entity);
         }
         else
         {
+            // 否则发布 entity change event（update）
             await TriggerEntityUpdateEventsAsync(entity);
-        }
-        
+        }        
+        // 发布 domain event
         await TriggerDomainEventsAsync(entity);
         
-        Collection.Update(entity);
-        
+        // 更新
+        Collection.Update(entity);        
         return entity;
     }
 }
@@ -492,6 +549,9 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity>
 
 ##### 2.3.3 MemDbRepo(TEntity, TKey)
 
+* memory repos with TKey
+* 使用 database 的 generate id 方法
+
 ```c#
 public class MemoryDbRepository<TMemoryDbContext, TEntity, TKey> 
     : MemoryDbRepository<TMemoryDbContext, TEntity>, 
@@ -515,6 +575,7 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity, TKey>
 {
     protected virtual void SetIdIfNeeded(TEntity entity)
     {
+        // 如果 TKey 是 int、log、guid
         if (typeof(TKey) == typeof(int) ||
             typeof(TKey) == typeof(long) ||
             typeof(TKey) == typeof(Guid))
@@ -533,7 +594,7 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity, TKey>
         bool autoSave = false, 
         CancellationToken cancellationToken = default)
     {
-        SetIdIfNeeded(entity);
+        SetIdIfNeeded(entity);        
         return base.InsertAsync(entity, autoSave, cancellationToken);
     }
 }
@@ -591,15 +652,19 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity, TKey>
 
 ##### 2.4.1 memory database
 
+* 数据库，存储数据表（memory database collection）的容器
+
 ###### 2.4.1.1 接口
 
 ```c#
 public interface IMemoryDatabase
-    {
-        IMemoryDatabaseCollection<TEntity> Collection<TEntity>() where TEntity : class, IEntity;
+{
+    IMemoryDatabaseCollection<TEntity> Collection<TEntity>() 
+        where TEntity : class, IEntity;
+    
+    TKey GenerateNextId<TEntity, TKey>();
+}
 
-        TKey GenerateNextId<TEntity, TKey>();
-    }
 ```
 
 ###### 2.4.1.2 实现
@@ -647,10 +712,13 @@ public class MemoryDatabase : IMemoryDatabase, ITransientDependency
 
 ##### 2.4.2  memoryCollection
 
+* 数据表，存储 entity 的容器
+
 ###### 2.4.2.1 接口
 
 ```c#
-public interface IMemoryDatabaseCollection<TEntity> : IEnumerable<TEntity>
+public interface IMemoryDatabaseCollection<TEntity> 
+    : IEnumerable<TEntity>
 {
     void Add(TEntity entity);    
     void Update(TEntity entity);    
@@ -663,13 +731,13 @@ public interface IMemoryDatabaseCollection<TEntity> : IEnumerable<TEntity>
 
 ```c#
 public class MemoryDatabaseCollection<TEntity> 
-    : IMemoryDatabaseCollection<TEntity>        where TEntity : class, IEntity
+    : IMemoryDatabaseCollection<TEntity> where TEntity : class, IEntity
 {
     // 容器
     private readonly Dictionary<string, byte[]> _dictionary = 
         new Dictionary<string, byte[]>();
     
-        // 注入序列化器
+    // 注入序列化器
     private readonly IMemoryDbSerializer _memoryDbSerializer;    
     public MemoryDatabaseCollection(IMemoryDbSerializer memoryDbSerializer)
     {
@@ -848,15 +916,19 @@ public class UnitOfWorkMemoryDatabaseProvider<TMemoryDbContext>
         {
             throw new AbpException($"A {nameof(IMemoryDatabase)} instance can only be created inside a unit of work!");
         }
+        
         // 获取 connection string
         var connectionString = _connectionStringResolver.Resolve<TMemoryDbContext>();
+        // 用 conn string 作为 memory db 名字一部分
         var dbContextKey = $"{typeof(TMemoryDbContext).FullName}_{connectionString}";
-        // 获取 database api
+        
+        // 获取 database api（没有则添加）        
         var databaseApi = unitOfWork.GetOrAddDatabaseApi(
             dbContextKey,
             () => new MemoryDbDatabaseApi(
                 _memoryDatabaseManager.Get(connectionString)));
         
+        // 返回 database api 封装的 database
         return ((MemoryDbDatabaseApi)databaseApi).Database;
     }
 }
@@ -864,6 +936,8 @@ public class UnitOfWorkMemoryDatabaseProvider<TMemoryDbContext>
 ```
 
 ###### 2.4.2.3 memory database manager
+
+* 解析 memory db 实例
 
 ```c#
 public class MemoryDatabaseManager : ISingletonDependency
@@ -887,6 +961,8 @@ public class MemoryDatabaseManager : ISingletonDependency
 ```
 
 ###### 2.4.2.4 memory database api
+
+* database 的封装
 
 ```c#
 public class MemoryDbDatabaseApi: IDatabaseApi

@@ -19,6 +19,7 @@
   * default repo implementation type
   * 自动注册 flag
 * repository register base 抽象基类实现自动注册
+* register 中 `AddRepositories()` 方法
   * 注册 options 中的 custom repos
   * 注册 default repo 
     * IAggregateRoot
