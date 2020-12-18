@@ -8,19 +8,28 @@
 
 ### 1. about
 
+#### 1.1 summary
+
 * abp框架提供了 memory db 功能，用于测试
 
-#### 1.1 how designed
+#### 1.2 how designed
 
-##### 1.1.1 自动注册 memory db repo
+##### 1.2.1 （自动）注册 memory db repo
 
-* 继承 repo register base 并实现功能
-  * get entity types（用于 entity 自动创建 repo）
-  * get repo type（用于创建 repo）
-* 继承 common dbContext register options
-* service 中添加和配置 common dbContext register options
+* memory dbContext register options
+  * 继承 common dbContext register options
+* memory dbContext register
+  * 继承 repo register base 并实现功能
+    * get entity types（获取要自动创建 repo 的 entity）
+    * get repo type（用于创建 repo）
+* service 中添加和配置 memory dbContext register options
+* memory repo
 
-##### 1.1.2 memory db
+##### 1.2.2 memory dbContext
+
+* memory db 的抽象映射
+
+##### 1.2.2 memory db
 
 * memory provider 获取 current  tenant 中的 database api
 * 如果没有 database api，使用 memory manager 创建 database
@@ -29,7 +38,7 @@
 
 ### 2. details
 
-#### 2.1 注册 memory db
+#### 2.1 注册 memory db repo
 
 * 实现 memory db 自动注册
 
@@ -117,7 +126,7 @@ public static class AbpMemoryDbServiceCollectionExtensions
         		optionsBuilder = null)            
         	where TMemoryDbContext : MemoryDbContext
     {
-        // 创建 memory db context 并配置
+        // 创建 memory dbContext register options 并配置
         var options = new AbpMemoryDbContextRegistrationOptions(
             typeof(TMemoryDbContext), 
             services);
@@ -148,27 +157,11 @@ public static class AbpMemoryDbServiceCollectionExtensions
 
 ```
 
-#### 2.2 memory db context
-
-```c#
-public abstract class MemoryDbContext : ISingletonDependency
-{
-    private static readonly Type[] EmptyTypeList = new Type[0];
-    
-    // 需要重写
-    public virtual IReadOnlyList<Type> GetEntityTypes()
-    {
-        return EmptyTypeList;
-    }
-}
-
-```
-
-#### 2.3 memory db repository
+#### 2.2 memory db repository
 
 * memory db repo 的实现
 
-##### 2.3.1 接口
+##### 2.2.1 接口
 
 ```c#
 public interface IMemoryDbRepository<TEntity> 
@@ -188,7 +181,7 @@ public interface IMemoryDbRepository<TEntity, TKey>
 
 ```
 
-##### 2.3.2 MemDbRepo(TEntity)
+##### 2.2.2 MemDbRepo(TEntity)
 
 ```c#
 public class MemoryDbRepository<TMemoryDbContext, TEntity> 
@@ -236,7 +229,7 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity>
                                       
 ```
 
-###### 2.3.2.1 property audit
+###### 2.2.2.1 property audit
 
 * 设置 audit property
 
@@ -261,7 +254,7 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity>
 
 ```
 
-###### 2.3.2.2 entity change event
+###### 2.2.2.2 entity change event
 
 * 触发 entity change event，实现自动审计事件
 
@@ -295,7 +288,7 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity>
 
 ```
 
-###### 2.3.2.3 trigger domain event
+###### 2.2.2.3 trigger domain event
 
 * domain event
 
@@ -348,7 +341,7 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity>
 }
 ```
 
-###### 2.3.2.4 insert
+###### 2.2.2.4 insert
 
 ```c#
 public class MemoryDbRepository<TMemoryDbContext, TEntity> 
@@ -401,7 +394,7 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity>
 
 ```
 
-###### 2.3.2.5 delete
+###### 2.2.2.5 delete
 
 ```c#
 public class MemoryDbRepository<TMemoryDbContext, TEntity> 
@@ -466,7 +459,7 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity>
 
 ```
 
-###### 2.3.2.6 update
+###### 2.2.2.6 update
 
 ```c#
 public class MemoryDbRepository<TMemoryDbContext, TEntity> 
@@ -503,7 +496,7 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity>
 
 ```
 
-###### 2.3.2.7 get or find
+###### 2.2.2.7 get or find
 
 ```c#
 public class MemoryDbRepository<TMemoryDbContext, TEntity> 
@@ -547,7 +540,7 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity>
 
 ```
 
-##### 2.3.3 MemDbRepo(TEntity, TKey)
+##### 2.2.3 MemDbRepo(TEntity, TKey)
 
 * memory repos with TKey
 * 使用 database 的 generate id 方法
@@ -568,7 +561,7 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity, TKey>
 
 ```
 
-###### 2.3.3.1 insert
+###### 2.2.3.1 insert
 
 ```c#
 public class MemoryDbRepository<TMemoryDbContext, TEntity, TKey> 
@@ -601,7 +594,7 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity, TKey>
 
 ```
 
-###### 2.3.3.2 delete
+###### 2.2.3.2 delete
 
 ```c#
 public class MemoryDbRepository<TMemoryDbContext, TEntity, TKey> 
@@ -617,7 +610,7 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity, TKey>
 
 ```
 
-###### 2.3.3.3 get or find
+###### 2.2.3.3 get or find
 
 ```c#
 public class MemoryDbRepository<TMemoryDbContext, TEntity, TKey> 
@@ -643,6 +636,26 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity, TKey>
         }
         
         return entity;
+    }
+}
+
+```
+
+#### 2.3 memory dbContext
+
+* memory db 的抽象映射
+* 隔离 repo 和 db
+* 没有实现？ TODO
+
+```c#
+public abstract class MemoryDbContext : ISingletonDependency
+{
+    private static readonly Type[] EmptyTypeList = new Type[0];
+    
+    // 需要重写
+    public virtual IReadOnlyList<Type> GetEntityTypes()
+    {
+        return EmptyTypeList;
     }
 }
 
@@ -837,7 +850,7 @@ public class Utf8JsonMemoryDbSerializerOptions
 
 ```
 
-##### 2.4.5 memory id generator
+##### 2.4.4 memory id generator
 
 ```c#
 internal class InMemoryIdGenerator
@@ -868,9 +881,9 @@ internal class InMemoryIdGenerator
 
 ```
 
-##### 2.4.4 memory database provider
+##### 2.4.5 memory database provider
 
-###### 2.4.4.1 接口
+###### 2.4.5.1 接口
 
 ```c#
 public interface IMemoryDatabaseProvider<TMemoryDbContext>        
@@ -882,7 +895,7 @@ public interface IMemoryDatabaseProvider<TMemoryDbContext>
 
 ```
 
-###### 2.4.4.2 实现
+###### 2.4.5.2 实现
 
 ```c#
 public class UnitOfWorkMemoryDatabaseProvider<TMemoryDbContext> 
@@ -935,7 +948,7 @@ public class UnitOfWorkMemoryDatabaseProvider<TMemoryDbContext>
 
 ```
 
-###### 2.4.2.3 memory database manager
+###### 2.4.5.3 memory database manager
 
 * 解析 memory db 实例
 
@@ -960,7 +973,7 @@ public class MemoryDatabaseManager : ISingletonDependency
     }
 ```
 
-###### 2.4.2.4 memory database api
+###### 2.4.5.4 memory database api
 
 * database 的封装
 
@@ -977,9 +990,9 @@ public class MemoryDbDatabaseApi: IDatabaseApi
 
 ```
 
-#### 2.6 使用 memory database
+##### 2.4.6 注册 memory db
 
-##### 2.6.1 模块
+* 在模块中注册 memory db
 
 ```c#
 [DependsOn(typeof(AbpDddDomainModule))]
@@ -997,12 +1010,7 @@ public class AbpMemoryDbModule : AbpModule
             typeof(MemoryDatabaseCollection<>));
     }
 }
-
 ```
-
-##### 2.6.2 注册 memory database
-
-见 2.1
 
 ### 3. practice
 
