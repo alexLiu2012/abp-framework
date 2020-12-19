@@ -8,13 +8,30 @@
 
 ### 1. about
 
+#### 1.1 summary
 
+* abp 框架集成了 ef core
+
+#### 1.2 how designed
+
+##### 1.2.1 （自动）注册 ef core repo
+
+* ef core dbContext register options
+  * 继承 common dbContext register options
+* ef core repo registrar
+  * 继承 repo register base
+* 在 services 中注册 abpDbContext
+  * dbContext factory 用于创建 dbContext options并配置
+
+##### 1.2.2 abp dbContext
+
+* 
 
 ### 2. details
 
-#### 2.1 注册 ef core db
+#### 2.1 注册 ef core db context
 
-* 实现 ef core db 自动注册
+* ef core db repo 自动注册
 
 ##### 2.1.1 ef core dbContext register options
 
@@ -25,7 +42,7 @@ public interface IAbpDbContextRegistrationOptionsBuilder
     : IAbpCommonDbContextRegistrationOptionsBuilder
 {
     void Entity<TEntity>(
-        [NotNull] Action<AbpEntityOptions<TEntity>> optionsAction)          
+        [NotNull] Action<AbpEntityOptions<TEntity>> optionsAction)
         	where TEntity : IEntity;
 }
 ```
@@ -37,6 +54,8 @@ public class AbpDbContextRegistrationOptions
     : AbpCommonDbContextRegistrationOptions, 
 	  IAbpDbContextRegistrationOptionsBuilder
 {
+    // 以 entityType 索引的 abpEntityOptions，
+    // 即以 type 分类索引的 entity 容器
     public Dictionary<Type, object> AbpEntityOptions { get; }
     
     public AbpDbContextRegistrationOptions(
@@ -44,9 +63,11 @@ public class AbpDbContextRegistrationOptions
         IServiceCollection services)            
         	: base(originalDbContextType, services)
     {
+        // 初始化时创建 abp entity options
         AbpEntityOptions = new Dictionary<Type, object>();
     }
     
+    // 配置 entity options
     public void Entity<TEntity>(
         Action<AbpEntityOptions<TEntity>> optionsAction) 
         	where TEntity : IEntity
@@ -60,7 +81,62 @@ public class AbpDbContextRegistrationOptions
 
 ```
 
-##### 2.1.2 ef core repos registrar
+##### 2.1.2 abp entity options
+
+* 存储 type 索引的 entity 的容器
+
+###### 2.1.2.1 EntityOptions
+
+```c#
+public class AbpEntityOptions
+{
+    private readonly IDictionary<Type, object> _options;    
+    public AbpEntityOptions()
+    {
+        _options = new Dictionary<Type, object>();
+    }
+    
+    public AbpEntityOptions<TEntity> GetOrNull<TEntity>()        
+        where TEntity : IEntity
+    {
+        return _options.GetOrDefault(
+            typeof(TEntity)) as AbpEntityOptions<TEntity>;
+    }
+    
+    public void Entity<TEntity>(
+        [NotNull] Action<AbpEntityOptions<TEntity>> optionsAction)
+        	where TEntity : IEntity
+    {
+        Check.NotNull(
+            optionsAction, 
+            nameof(optionsAction));
+        
+        optionsAction(_options
+            .GetOrAdd(
+                typeof(TEntity),
+                () => new AbpEntityOptions<TEntity>()) 
+            as AbpEntityOptions<TEntity>);
+    }
+}
+
+```
+
+###### 2.1.2.2 EntityOptions(TEntity)
+
+```c#
+public class AbpEntityOptions<TEntity>        
+    where TEntity : IEntity
+{
+    public static AbpEntityOptions<TEntity> Empty { get; } = 
+        new AbpEntityOptions<TEntity>();
+    
+    public Func<IQueryable<TEntity>, IQueryable<TEntity>> 
+        DefaultWithDetailsFunc { get; set; }
+}
+   
+```
+
+##### 2.1.3 ef core repos registrar
 
 ```c#
 public class EfCoreRepositoryRegistrar 
@@ -98,7 +174,35 @@ public class EfCoreRepositoryRegistrar
 
 ```
 
-##### 2.1.3 add abp (ef core) dbContext
+##### 2.1.4 dbContext helper
+
+* 通过反射获取 dbContext 中符合条件的 entity，
+* 即 IEntity 接口的，DbSet<T> 定义的 
+
+```c#
+internal static class DbContextHelper
+{
+    public static IEnumerable<Type> GetEntityTypes(Type dbContextType)
+    {
+        return
+            from property in 
+            	dbContextType.GetTypeInfo().GetProperties(
+            		BindingFlags.Public | 
+            		BindingFlags.Instance)
+            where
+            	// 定义的 DbSet<T> 项（property）
+            	ReflectionHelper.IsAssignableToGenericType(
+            		property.PropertyType, typeof(DbSet<>)) &&
+            	// 实现了 IEntity 接口
+            	typeof(IEntity).IsAssignableFrom(
+            		property.PropertyType.GenericTypeArguments[0])
+            select property.PropertyType.GenericTypeArguments[0];
+    }
+}
+
+```
+
+##### 2.1.5 add abp (ef core) dbContext
 
 ```c#
 public static class AbpEfCoreServiceCollectionExtensions
@@ -110,11 +214,13 @@ public static class AbpEfCoreServiceCollectionExtensions
     {
         services.AddMemoryCache();
         
+        // 添加和配置 abp(ef core) dbContext register options
         var options = new AbpDbContextRegistrationOptions(
             typeof(TDbContext), 
             services);
         optionsBuilder?.Invoke(options);
         
+        // 注册 TDbContext
         services.TryAddTransient(
             DbContextOptionsFactory.Create<TDbContext>);
         
@@ -126,6 +232,7 @@ public static class AbpEfCoreServiceCollectionExtensions
                     typeof(TDbContext)));
         }
         
+        // 注册 repository 
         new EfCoreRepositoryRegistrar(options).AddRepositories();
         
         return services;
@@ -134,11 +241,627 @@ public static class AbpEfCoreServiceCollectionExtensions
 
 ```
 
+##### 2.1.6  dbContext options factory
 
+```c#
+public static class DbContextOptionsFactory
+{
+    public static DbContextOptions<TDbContext> Create<TDbContext>(
+        IServiceProvider serviceProvider)            
+        	where TDbContext : AbpDbContext<TDbContext>
+    {
+        var creationContext = GetCreationContext<TDbContext>(serviceProvider);
+        
+        var context = new AbpDbContextConfigurationContext<TDbContext>(
+            creationContext.ConnectionString,
+            serviceProvider,
+            creationContext.ConnectionStringName,
+            creationContext.ExistingConnection            );
+        
+        var options = GetDbContextOptions<TDbContext>(serviceProvider);
+        
+        PreConfigure(options, context);
+        Configure(options, context);
+        
+        return context.DbContextOptions.Options;
+    }                               
+}
 
-#### 2.2 abp db context
+```
 
-##### 2.2.1 IEfCoreDbContext 接口
+###### 2.1.6.1 get creation context options
+
+```c#
+public static class DbContextOptionsFactory
+{
+    private static DbContextCreationContext GetCreationContext<TDbContext>(
+        IServiceProvider serviceProvider)            	
+        	where TDbContext : AbpDbContext<TDbContext>
+    {
+        var context = DbContextCreationContext.Current;
+        if (context != null)
+        {
+            return context;
+        }
+        
+        var connectionStringName = ConnectionStringNameAttribute
+            .GetConnStringName<TDbContext>();
+        var connectionString = serviceProvider
+            .GetRequiredService<IConnectionStringResolver>()
+            	.Resolve(connectionStringName);
+        
+        return new DbContextCreationContext(
+            connectionStringName,
+            connectionString);        
+    }
+}
+
+```
+
+###### 2.1.6.2 get dbContext options
+
+```c#
+public static class DbContextOptionsFactory
+{
+    private static AbpDbContextOptions GetDbContextOptions<TDbContext>(
+        IServiceProvider serviceProvider)        
+        	where TDbContext : AbpDbContext<TDbContext>
+    {
+        return serviceProvider
+            .GetRequiredService<IOptions<AbpDbContextOptions>>()
+            	.Value;
+    }
+}
+
+```
+
+###### 2.1.6.3 pre configure
+
+```c#
+public static class DbContextOptionsFactory
+{
+    private static void PreConfigure<TDbContext>(
+        AbpDbContextOptions options,
+        AbpDbContextConfigurationContext<TDbContext> context)        
+        	where TDbContext : AbpDbContext<TDbContext>
+    {
+        foreach (var defaultPreConfigureAction in 
+                 options.DefaultPreConfigureActions)
+        {
+            defaultPreConfigureAction.Invoke(context);
+        }
+        
+        var preConfigureActions = options.PreConfigureActions
+            .GetOrDefault(typeof(TDbContext));
+        if (!preConfigureActions.IsNullOrEmpty())
+        {
+            foreach (var preConfigureAction in preConfigureActions)
+            {
+                ((Action<AbpDbContextConfigurationContext<TDbContext>>)
+                 preConfigureAction)
+                	.Invoke(context);
+            }
+        }
+    }
+}
+
+```
+
+###### 2.1.6.4 configure
+
+```c#
+public static class DbContextOptionsFactory
+{
+    private static void Configure<TDbContext>(
+        AbpDbContextOptions options,
+        AbpDbContextConfigurationContext<TDbContext> context)            
+        	where TDbContext : AbpDbContext<TDbContext>
+    {
+        var configureAction = options.ConfigureActions
+            .GetOrDefault(typeof(TDbContext));
+        if (configureAction != null)
+        {
+            ((Action<AbpDbContextConfigurationContext<TDbContext>>)
+             configureAction)
+            	.Invoke(context);
+        }
+        else if (options.DefaultConfigureAction != null)
+        {
+            options.DefaultConfigureAction.Invoke(context);
+        }
+        else
+        {
+            throw new AbpException(
+                    $"No configuration found for {typeof(DbContext).AssemblyQualifiedName}! Use services.Configure<AbpDbContextOptions>(...) to configure it.");
+        }
+    }
+}
+
+```
+
+#### 2.2 ef core repo
+
+* 通过 ef core 实现的 repository
+* 内部通过 dbContext 和 dbSet 完成 crud，解耦了 db
+
+##### 2.2.1 IEfCoreRepo 接口
+
+```c#
+// ef core repo (entity)
+public interface IEfCoreRepository<TEntity> 
+    : IRepository<TEntity>        
+        where TEntity : class, IEntity
+{
+    DbContext DbContext { get; }    
+    DbSet<TEntity> DbSet { get; }
+}
+
+// ef core repo (entity, key)
+public interface IEfCoreRepository<TEntity, TKey> 
+    : IEfCoreRepository<TEntity>, IRepository<TEntity, TKey>        
+        where TEntity : class, IEntity<TKey>
+{    
+}
+
+```
+
+##### 2.2.2 EfCoreRepo(TEntity)
+
+```c#
+public class EfCoreRepository<TDbContext, TEntity> 
+    : RepositoryBase<TEntity>, 
+	  IEfCoreRepository<TEntity>, 
+	  IAsyncEnumerable<TEntity>        
+          where TDbContext : IEfCoreDbContext        
+          where TEntity : class, IEntity
+{
+    DbContext IEfCoreRepository<TEntity>.DbContext => 
+        DbContext.As<DbContext>();
+              
+    public virtual DbSet<TEntity> DbSet => 
+        DbContext.Set<TEntity>();        
+    
+    protected virtual TDbContext DbContext => 
+        _dbContextProvider.GetDbContext();
+    
+    protected virtual AbpEntityOptions<TEntity> AbpEntityOptions => 
+        _entityOptionsLazy.Value;
+    
+    private readonly IDbContextProvider<TDbContext> _dbContextProvider;
+    private readonly Lazy<AbpEntityOptions<TEntity>> _entityOptionsLazy;
+    
+    public virtual IGuidGenerator GuidGenerator { get; set; }
+    
+    public EfCoreRepository(IDbContextProvider<TDbContext> dbContextProvider)
+    {
+        // 生成 guid generator
+        GuidGenerator = SimpleGuidGenerator.Instance;
+        
+        // 注入 (abp ef core) dbContext provider
+        _dbContextProvider = dbContextProvider;                
+        // 懒加载 IOptions<abp entity options>.Value，
+        // 如果没有，创建
+        _entityOptionsLazy = new Lazy<AbpEntityOptions<TEntity>>(
+            () => ServiceProvider
+            	.GetRequiredService<IOptions<AbpEntityOptions>>()
+            		.Value.GetOrNull<TEntity>() 
+            			?? AbpEntityOptions<TEntity>.Empty);
+    }
+    
+                                
+    protected override IQueryable<TEntity> GetQueryable()
+    {
+        return DbSet.AsQueryable();
+    }
+    
+    public IAsyncEnumerator<TEntity> GetAsyncEnumerator(
+        CancellationToken cancellationToken = default)
+    {
+        return DbSet.AsAsyncEnumerable().GetAsyncEnumerator(cancellationToken);
+    }
+            
+    public virtual async Task EnsureCollectionLoadedAsync<TProperty>(
+        TEntity entity,
+        Expression<Func<TEntity, IEnumerable<TProperty>>> propertyExpression,
+        CancellationToken cancellationToken = default)        
+        	where TProperty : class
+    {
+        await DbContext.Entry(entity)
+            .Collection(propertyExpression)
+            .LoadAsync(GetCancellationToken(cancellationToken));
+    }
+    
+    public virtual async Task EnsurePropertyLoadedAsync<TProperty>(
+        TEntity entity,
+        Expression<Func<TEntity, TProperty>> propertyExpression,
+        CancellationToken cancellationToken = default)        
+        	where TProperty : class
+    {
+        await DbContext.Entry(entity)
+            .Reference(propertyExpression)
+            .LoadAsync(GetCancellationToken(cancellationToken));
+    }                            
+}
+
+```
+
+###### 2.2.2.1 insert
+
+```c#
+public class EfCoreRepository<TDbContext, TEntity> 
+{
+    // 如果是 IEntity<Guid>，设置 id
+    protected virtual void CheckAndSetId(TEntity entity)
+    {
+        if (entity is IEntity<Guid> entityWithGuidId)
+        {
+            TrySetGuidId(entityWithGuidId);
+        }
+    }    
+    protected virtual void TrySetGuidId(IEntity<Guid> entity)
+    {
+        // 如果设置过 id（entity.id）不为 null，忽略
+        if (entity.Id != default)
+        {
+            return;
+        }
+        
+        EntityHelper.TrySetId(
+            entity,
+            () => GuidGenerator.Create(),
+            true);
+    }
+    
+    public async override Task<TEntity> InsertAsync(
+        TEntity entity, 
+        bool autoSave = false, 
+        CancellationToken cancellationToken = default)
+    {
+        // 设置 entity.id（懒存储）
+        CheckAndSetId(entity);
+        // 向 DbSet 中添加
+        var savedEntity = DbSet.Add(entity).Entity;
+        
+        // 如果使用 autoSave，保存到数据库
+        if (autoSave)
+        {
+            await DbContext.SaveChangesAsync(
+                GetCancellationToken(cancellationToken));
+        }
+        
+        return savedEntity;
+    }
+}
+
+```
+
+###### 2.2.2.2 delete
+
+```c#
+public class EfCoreRepository<TDbContext, TEntity> 
+{
+    // 删除 entity
+    public async override Task DeleteAsync(
+        TEntity entity, 
+        bool autoSave = false, 
+        CancellationToken cancellationToken = default)
+    {
+        // 从 DbSet 删除 entity(object)，
+        // 如果没有 entity，会报错？抛异常？ 
+        DbSet.Remove(entity);
+        
+        // 如果使用 autoSave，保存到数据库
+        if (autoSave)
+        {
+            await DbContext.SaveChangesAsync(
+                GetCancellationToken(cancellationToken));
+        }
+    }
+    
+    // 删除符合条件的 entity
+    public async override Task DeleteAsync(
+        Expression<Func<TEntity, bool>> predicate, 
+        bool autoSave = false, 
+        CancellationToken cancellationToken = default)
+    {
+        // 获取符合条件的 entities
+        var entities = await GetQueryable()
+            .Where(predicate)
+            .ToListAsync(GetCancellationToken(cancellationToken));
+        
+        // 从 DbSet 删除 entity(object)
+        // 如果没有 entity，会报错？抛异常？ 
+        foreach (var entity in entities)
+        {
+            DbSet.Remove(entity);
+        }
+        
+        // 如果使用 autoSave，保存到数据库
+        if (autoSave)
+        {
+            await DbContext.SaveChangesAsync(
+                GetCancellationToken(cancellationToken));
+        }
+    }
+}
+```
+
+###### 2.2.2.3 update
+
+```c#
+public class EfCoreRepository<TDbContext, TEntity> 
+{
+    public async override Task<TEntity> UpdateAsync(
+        TEntity entity, 
+        bool autoSave = false, 
+        CancellationToken cancellationToken = default)
+    {
+        // 向 dbContext 附加 entity 并更新
+        DbContext.Attach(entity);        
+        var updatedEntity = DbContext.Update(entity).Entity;
+        
+        // 如果使用 autoSave，保存到数据库
+        if (autoSave)
+        {
+            await DbContext.SaveChangesAsync(
+                GetCancellationToken(cancellationToken));
+        }
+        
+        return updatedEntity;
+    }
+}
+
+```
+
+###### 2.2.2.4 with details
+
+```c#
+public class EfCoreRepository<TDbContext, TEntity> 
+{
+    public override IQueryable<TEntity> WithDetails()
+    {
+        // 如果 entity options 中没有定义了 details func
+        if (AbpEntityOptions.DefaultWithDetailsFunc == null)
+        {
+            // 使用 ms ef core 的 with details 方法
+            return base.WithDetails();
+        }
+        // 使用 entity optinos 中定义的 details func
+        return AbpEntityOptions.DefaultWithDetailsFunc(GetQueryable());
+    }
+    
+    public override IQueryable<TEntity> WithDetails(
+        params Expression<Func<TEntity, object>>[] propertySelectors)
+    {
+        var query = GetQueryable();
+        
+        // 遍历传入的 entity func 过滤 entity
+        if (!propertySelectors.IsNullOrEmpty())
+        {
+            foreach (var propertySelector in propertySelectors)
+            {
+                query = query.Include(propertySelector);
+            }
+        }
+        
+        return query;
+    }
+}
+
+```
+
+###### 2.2.2.5 find
+
+```c#
+public class EfCoreRepository<TDbContext, TEntity> 
+{
+    // find, single or default, 不抛出异常
+    public async override Task<TEntity> FindAsync(
+        Expression<Func<TEntity, bool>> predicate,
+        bool includeDetails = true,
+        CancellationToken cancellationToken = default)
+    {
+        return includeDetails
+            ? await WithDetails()
+            	.Where(predicate)
+            	.SingleOrDefaultAsync(
+            		GetCancellationToken(cancellationToken))
+            : await DbSet
+                .Where(predicate)
+                .SingleOrDefaultAsync(
+                	GetCancellationToken(cancellationToken));
+    }
+    
+    public async override Task<List<TEntity>> GetListAsync(
+        bool includeDetails = false, 
+        CancellationToken cancellationToken = default)
+    {
+        return includeDetails
+            ? await WithDetails()
+            	.ToListAsync(
+            		GetCancellationToken(cancellationToken))
+            : await DbSet
+                .ToListAsync(
+                	GetCancellationToken(cancellationToken));
+    }
+    
+    public async override Task<long> GetCountAsync(
+        CancellationToken cancellationToken = default)
+    {
+        return await DbSet
+            .LongCountAsync(
+            	GetCancellationToken(cancellationToken));
+    }
+    
+    public async override Task<List<TEntity>> GetPagedListAsync(
+        int skipCount,
+        int maxResultCount,
+        string sorting,
+        bool includeDetails = false,
+        CancellationToken cancellationToken = default)
+    {
+        var queryable = includeDetails ? WithDetails() : DbSet;
+        
+        return await queryable
+            .OrderBy(sorting)
+            .PageBy(
+            	skipCount, 
+            	maxResultCount)
+            .ToListAsync(
+            	GetCancellationToken(cancellationToken));
+    }
+}
+
+```
+
+###### 2.2.2.6 get list
+
+```c#
+public class EfCoreRepository<TDbContext, TEntity> 
+{    
+    public async override Task<List<TEntity>> GetListAsync(
+        bool includeDetails = false, 
+        CancellationToken cancellationToken = default)
+    {
+        return includeDetails
+            // 如果 include details
+            ? await WithDetails()
+            	.ToListAsync(
+            		GetCancellationToken(cancellationToken))
+            // not include details
+            : await DbSet
+                .ToListAsync(
+                	GetCancellationToken(cancellationToken));
+    }
+    
+    public async override Task<long> GetCountAsync(
+        CancellationToken cancellationToken = default)
+    {
+        return await DbSet
+            .LongCountAsync(
+            	GetCancellationToken(cancellationToken));
+    }
+    
+    public async override Task<List<TEntity>> GetPagedListAsync(
+        int skipCount,
+        int maxResultCount,
+        string sorting,
+        bool includeDetails = false,
+        CancellationToken cancellationToken = default)
+    {
+        var queryable = includeDetails ? WithDetails() : DbSet;
+        
+        return await queryable
+            .OrderBy(sorting)
+            .PageBy(
+            	skipCount, 
+            	maxResultCount)
+            .ToListAsync(
+            	GetCancellationToken(cancellationToken));
+    }
+}
+
+```
+
+##### 2.2.3 EFCoreRepo(TEntity, TKey)
+
+```c#
+public class EfCoreRepository<TDbContext, TEntity, TKey> 
+    : EfCoreRepository<TDbContext, TEntity>,        
+	  IEfCoreRepository<TEntity, TKey>,        
+	  ISupportsExplicitLoading<TEntity, TKey>        
+          where TDbContext : IEfCoreDbContext        
+          where TEntity : class, IEntity<TKey>
+{
+    public EfCoreRepository(
+        IDbContextProvider<TDbContext> dbContextProvider)            
+        	: base(dbContextProvider)
+    {        
+    }                        
+}
+
+```
+
+###### 2.2.3.1 delete
+
+```c#
+public class EfCoreRepository<TDbContext, TEntity, TKey> 
+{
+    // 删除特定 id 的 entity，
+    // 如果没有 entity，不抛出异常或错误
+    public virtual async Task DeleteAsync(
+        TKey id, 
+        bool autoSave = false, 
+        CancellationToken cancellationToken = default)
+    {
+        var entity = await FindAsync(
+            id, 
+            cancellationToken: cancellationToken);
+        
+        if (entity == null)
+        {
+            return;
+        }
+        
+        await DeleteAsync(entity, autoSave, cancellationToken);
+    }
+}
+
+```
+
+###### 2.2.3.2 find
+
+```c#
+public class EfCoreRepository<TDbContext, TEntity, TKey> 
+{
+    public virtual async Task<TEntity> FindAsync(
+        TKey id, 
+        bool includeDetails = true, 
+        CancellationToken cancellationToken = default)
+    {
+        return includeDetails
+            ? await WithDetails()
+            	.FirstOrDefaultAsync(
+            		e => e.Id.Equals(id), 
+            		GetCancellationToken(cancellationToken))
+            : await DbSet.FindAsync(
+                new object[] {id}, 
+                GetCancellationToken(cancellationToken));
+    }
+}
+```
+
+###### 2.2.3.3 get
+
+* 找不到抛出异常
+
+```c#
+public class EfCoreRepository<TDbContext, TEntity, TKey> 
+{
+    public virtual async Task<TEntity> GetAsync(
+        TKey id, 
+        bool includeDetails = true, 
+        CancellationToken cancellationToken = default)
+    {
+        var entity = await FindAsync(
+            id, 
+            includeDetails, 
+            GetCancellationToken(cancellationToken));
+        
+        if (entity == null)
+        {
+            throw new EntityNotFoundException(typeof(TEntity), id);
+        }
+        
+        return entity;
+    }
+}
+
+```
+
+#### 2.3 abp db context 接口
+
+##### 2.3.1 IEfCoreDbContext 
 
 * 反向定义的 EfCore.DbContext 的接口
 
@@ -164,7 +887,7 @@ public interface IEfCoreDbContext
 
 ```
 
-###### 2.2.1.1 add and add range
+###### 2.3.1.1 add and add range
 
 ```c#
 public interface IEfCoreDbContext 
@@ -201,7 +924,7 @@ public interface IEfCoreDbContext
 
 ```
 
-###### 2.2.1.2 attach and attach range
+###### 2.3.1.2 attach and attach range
 
 ```c#
 public interface IEfCoreDbContext 
@@ -223,7 +946,7 @@ public interface IEfCoreDbContext
 
 ```
 
-###### 2.2.1.3  remove and remove range
+###### 2.3.1.3  remove and remove range
 
 ```c#
 public interface IEfCoreDbContext 
@@ -245,7 +968,7 @@ public interface IEfCoreDbContext
 
 ```
 
-###### 2.2.1.4 update and update range
+###### 2.3.1.4 update and update range
 
 ```c#
 public interface IEfCoreDbContext 
@@ -267,7 +990,7 @@ public interface IEfCoreDbContext
 
 ```
 
-###### 2.2.1.5 find
+###### 2.3.1.5 find
 
 ```c#
 public interface IEfCoreDbContext 
@@ -299,7 +1022,7 @@ public interface IEfCoreDbContext
 
 ```
 
-###### 2.2.1.6 save changes
+###### 2.3.1.6 save changes
 
 ```c#
 public interface IEfCoreDbContext 
@@ -316,8 +1039,7 @@ public interface IEfCoreDbContext
     Task<int> SaveChangesAsync(
         bool acceptAllChangesOnSuccess, 
         CancellationToken cancellationToken = default);
-            
-    
+                
     // call the DbContext,
     // <see cref="SaveChangesAsync(bool, CancellationToken)"/> method,
     // directly of EF Core, 
@@ -326,9 +1048,10 @@ public interface IEfCoreDbContext
         bool acceptAllChangesOnSuccess, 
         CancellationToken cancellationToken = default);          
 }
+
 ```
 
-##### 2.2.2 IAbpEfCoreDbContext 接口
+##### 2.3.2 IAbpEfCoreDbContext
 
 * abp 框架扩展的 (ef core) dbContext 接口
 
@@ -341,9 +1064,24 @@ public interface IAbpEfCoreDbContext : IEfCoreDbContext
 
 ```
 
-##### 2.2.3 AbpDbContext 实现
+###### 2.3.2.1 ef core dbContext initialize context
+
+```c#
+public class AbpEfCoreDbContextInitializationContext
+{
+    public IUnitOfWork UnitOfWork { get; }    
+    public AbpEfCoreDbContextInitializationContext(IUnitOfWork unitOfWork)
+    {
+        UnitOfWork = unitOfWork;
+    }
+}
+
+```
+
+#### 2.4 abp db context 实现
 
 * abp 框架定义的 abpDbContext 实现
+* 扩展 ef core DbContext 功能
 
 ```c#
 public abstract class AbpDbContext<TDbContext> 
@@ -400,357 +1138,18 @@ public abstract class AbpDbContext<TDbContext>
                     nameof(ConfigureValueGenerated),
                     BindingFlags.Instance | BindingFlags.NonPublic);
     
-    protected AbpDbContext(DbContextOptions<TDbContext> options) : base(options)
-    {
-        // 属性注入
+    protected AbpDbContext(
+        DbContextOptions<TDbContext> options) : base(options)
+    {        
         GuidGenerator = SimpleGuidGenerator.Instance;
+        
+        // 属性注入
         EntityChangeEventHelper = NullEntityChangeEventHelper.Instance;
         EntityHistoryHelper = NullEntityHistoryHelper.Instance;
         Logger = NullLogger<AbpDbContext<TDbContext>>.Instance;
     }
-    
-    protected override void OnModelCreating(ModelBuilder modelBuilder)
-    {
-        base.OnModelCreating(modelBuilder);
-        
-        TrySetDatabaseProvider(modelBuilder);
-        
-        foreach (var entityType in modelBuilder.Model.GetEntityTypes())
-        {
-            ConfigureBasePropertiesMethodInfo
-                .MakeGenericMethod(entityType.ClrType)
-                	.Invoke(
-                		this, 
-                		new object[] { modelBuilder, entityType });
+                                                               
             
-            ConfigureValueConverterMethodInfo
-                .MakeGenericMethod(entityType.ClrType)
-                	.Invoke(
-                		this, 
-                		new object[] { modelBuilder, entityType });
-            
-            ConfigureValueGeneratedMethodInfo
-                .MakeGenericMethod(entityType.ClrType)
-                	.Invoke(
-                		this, 
-                		new object[] { modelBuilder, entityType });
-        }
-    }
-    
-    protected virtual void TrySetDatabaseProvider(ModelBuilder modelBuilder)
-    {
-        var provider = GetDatabaseProviderOrNull(modelBuilder);
-        if (provider != null)
-        {
-            modelBuilder.SetDatabaseProvider(provider.Value);
-        }
-    }
-    
-    protected virtual EfCoreDatabaseProvider? 
-        GetDatabaseProviderOrNull(ModelBuilder modelBuilder)
-    {        
-        switch (Database.ProviderName)	// from dbContext？？
-        {
-            case "Microsoft.EntityFrameworkCore.SqlServer":
-                return EfCoreDatabaseProvider.SqlServer;
-            case "Npgsql.EntityFrameworkCore.PostgreSQL":
-                return EfCoreDatabaseProvider.PostgreSql;
-            case "Pomelo.EntityFrameworkCore.MySql":
-                return EfCoreDatabaseProvider.MySql;
-            case "Oracle.EntityFrameworkCore":
-            case "Devart.Data.Oracle.Entity.EFCore":
-                return EfCoreDatabaseProvider.Oracle;
-            case "Microsoft.EntityFrameworkCore.Sqlite":
-                return EfCoreDatabaseProvider.Sqlite;
-            case "Microsoft.EntityFrameworkCore.InMemory":
-                return EfCoreDatabaseProvider.InMemory;
-            case "FirebirdSql.EntityFrameworkCore.Firebird":
-                return EfCoreDatabaseProvider.Firebird;
-            case "Microsoft.EntityFrameworkCore.Cosmos":
-                return EfCoreDatabaseProvider.Cosmos;
-            default:
-                return null;
-        }
-    }
-    
-    public async override Task<int> SaveChangesAsync(
-        bool acceptAllChangesOnSuccess, 
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            var auditLog = AuditingManager?.Current?.Log;
-            
-            List<EntityChangeInfo> entityChangeList = null;
-            if (auditLog != null)
-            {
-                entityChangeList = EntityHistoryHelper.
-                    CreateChangeList(ChangeTracker.Entries().ToList());
-            }
-            
-            var changeReport = ApplyAbpConcepts();
-            
-            var result = await base.SaveChangesAsync(
-                acceptAllChangesOnSuccess, 
-                cancellationToken);
-            
-            await EntityChangeEventHelper.TriggerEventsAsync(changeReport);
-            
-            if (auditLog != null)
-            {
-                EntityHistoryHelper.UpdateChangeList(entityChangeList);
-                auditLog.EntityChanges.AddRange(entityChangeList);
-                Logger.LogDebug($"Added {entityChangeList.Count} entity changes to the current audit log");
-            }
-            
-            return result;
-        }
-        catch (DbUpdateConcurrencyException ex)
-        {
-            throw new AbpDbConcurrencyException(ex.Message, ex);
-        }
-        finally
-        {
-            ChangeTracker.AutoDetectChangesEnabled = true;
-        }
-    }
-    
-        /// <summary>
-        /// This method will call the DbContext <see cref="SaveChangesAsync(bool, CancellationToken)"/> method directly of EF Core, which doesn't apply concepts of abp.
-        /// </summary>
-    public virtual Task<int> SaveChangesOnDbContextAsync(
-        bool acceptAllChangesOnSuccess, 
-        CancellationToken cancellationToken = default)
-    {
-        return base.SaveChangesAsync(
-            acceptAllChangesOnSuccess, 
-            cancellationToken);
-    }
-    
-    public virtual void Initialize(
-        AbpEfCoreDbContextInitializationContext initializationContext)
-    {
-        if (initializationContext
-            	.UnitOfWork.Options.Timeout.HasValue &&
-            Database.IsRelational() &&
-            !Database.GetCommandTimeout().HasValue)
-        {
-            Database.SetCommandTimeout(
-                TimeSpan.FromMilliseconds(
-                    initializationContext.UnitOfWork.Options.Timeout.Value));
-        }
-        
-        ChangeTracker.CascadeDeleteTiming = CascadeTiming.OnSaveChanges;
-        
-        ChangeTracker.Tracked += ChangeTracker_Tracked;
-    }
-    
-    protected virtual void ChangeTracker_Tracked(
-        object sender, 
-        EntityTrackedEventArgs e)
-    {
-        FillExtraPropertiesForTrackedEntities(e);
-    }
-    
-    protected virtual void FillExtraPropertiesForTrackedEntities(
-        EntityTrackedEventArgs e)
-    {
-        var entityType = e.Entry.Metadata.ClrType;
-        if (entityType == null)
-        {
-            return;
-        }
-        
-        if (!(e.Entry.Entity is IHasExtraProperties entity))
-        {
-            return;
-        }
-        
-        if (!e.FromQuery)
-        {
-            return;
-        }
-        
-        var objectExtension = ObjectExtensionManager.Instance.GetOrNull(entityType);
-        if (objectExtension == null)
-        {
-            return;
-        }
-        
-        foreach (var property in objectExtension.GetProperties())
-        {
-            if (!property.IsMappedToFieldForEfCore())
-            {
-                continue;
-            }
-            
-            /* Checking "currentValue != null" has a good advantage:
-            * Assume that you we already using a named extra property,
-            * then decided to create a field (entity extension) for it.
-            * In this way, it prevents to delete old value in the JSON and
-            * updates the field on the next save!
-            */
-            
-            var currentValue = e.Entry.CurrentValues[property.Name];
-            if (currentValue != null)
-            {
-                entity.ExtraProperties[property.Name] = currentValue;
-            }
-        }
-    }
-    
-    protected virtual EntityChangeReport ApplyAbpConcepts()
-    {
-        var changeReport = new EntityChangeReport();
-        
-        foreach (var entry in ChangeTracker.Entries().ToList())
-        {
-            ApplyAbpConcepts(entry, changeReport);
-        }
-        
-        return changeReport;
-    }
-    
-    protected virtual void ApplyAbpConcepts(
-        EntityEntry entry, 
-        EntityChangeReport changeReport)
-    {
-        switch (entry.State)
-        {
-            case EntityState.Added:
-                ApplyAbpConceptsForAddedEntity(entry, changeReport);
-                break;
-            case EntityState.Modified:
-                ApplyAbpConceptsForModifiedEntity(entry, changeReport);
-                break;
-            case EntityState.Deleted:
-                ApplyAbpConceptsForDeletedEntity(entry, changeReport);
-                break;
-        }
-        
-        HandleExtraPropertiesOnSave(entry);
-        
-        AddDomainEvents(changeReport, entry.Entity);
-    }
-    
-    protected virtual void HandleExtraPropertiesOnSave(EntityEntry entry)
-    {
-        if (entry.State.IsIn(EntityState.Deleted, EntityState.Unchanged))
-        {
-            return;
-        }
-        
-        var entityType = entry.Metadata.ClrType;
-        if (entityType == null)
-        {
-            return;
-        }
-        
-        if (!(entry.Entity is IHasExtraProperties entity))
-        {
-            return;
-        }
-        
-        var objectExtension = ObjectExtensionManager.Instance.GetOrNull(entityType);
-        if (objectExtension == null)
-        {
-            return;
-        }
-        
-        var efMappedProperties = ObjectExtensionManager.Instance
-            .GetProperties(entityType)
-            .Where(p => p.IsMappedToFieldForEfCore());
-        
-        foreach (var property in efMappedProperties)
-        {
-            if (!entity.HasProperty(property.Name))
-            {
-                continue;
-            }
-            
-            var entryProperty = entry.Property(property.Name);
-            var entityProperty = entity.GetProperty(property.Name);
-            if (entityProperty == null)
-            {
-                entryProperty.CurrentValue = null;
-                continue;
-            }
-            
-            if (entryProperty.Metadata.ClrType == entityProperty.GetType())
-            {
-                entryProperty.CurrentValue = entityProperty;
-            }
-            else
-            {
-                if (TypeHelper
-                    	.IsPrimitiveExtended(
-                            entryProperty.Metadata.ClrType, 
-                            includeEnums: true))
-                {
-                    var conversionType = entryProperty.Metadata.ClrType;
-                    if (TypeHelper.IsNullable(conversionType))
-                    {
-                        conversionType = conversionType
-                            .GetFirstGenericArgumentIfNullable();
-                    }
-                    
-                    if (conversionType == typeof(Guid))
-                    {
-                        entryProperty.CurrentValue = 
-                            TypeDescriptor.GetConverter(conversionType)
-                            	.ConvertFromInvariantString(
-                            		entityProperty.ToString());
-                    }
-                    else
-                    {
-                        entryProperty.CurrentValue = 
-                            Convert.ChangeType(
-                            	entityProperty, 
-                            	conversionType, 
-                            	CultureInfo.InvariantCulture);
-                    }
-                }
-            }
-        }
-    }
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    protected virtual void UpdateConcurrencyStamp(EntityEntry entry)
-    {
-        var entity = entry.Entity as IHasConcurrencyStamp;
-        if (entity == null)
-        {
-            return;
-        }
-        
-        Entry(entity)
-            .Property(x => x.ConcurrencyStamp).OriginalValue = entity.ConcurrencyStamp;
-        entity.ConcurrencyStamp = Guid.NewGuid().ToString("N");
-    }
-    
-    protected virtual void SetConcurrencyStampIfNull(EntityEntry entry)
-    {
-        var entity = entry.Entity as IHasConcurrencyStamp;
-        if (entity == null)
-        {
-            return;
-        }
-        
-        if (entity.ConcurrencyStamp != null)
-        {
-            return;
-        }
-        
-        entity.ConcurrencyStamp = Guid.NewGuid().ToString("N");
-    }
-    
     protected virtual bool TryCancelDeletionForSoftDelete(EntityEntry entry)
     {
         if (!(entry.Entity is ISoftDelete))
@@ -768,109 +1167,7 @@ public abstract class AbpDbContext<TDbContext>
         entry.Entity.As<ISoftDelete>().IsDeleted = true;
         return true;
     }
-    
-    
-    
-    
-    
-    protected virtual void ConfigureBaseProperties<TEntity>(
-        ModelBuilder modelBuilder, 
-        IMutableEntityType mutableEntityType)            
-        	where TEntity : class
-    {
-        if (mutableEntityType.IsOwned())
-        {
-            return;
-        }
-        
-        if (!typeof(IEntity).IsAssignableFrom(typeof(TEntity)))
-        {
-            return;
-        }
-        
-        modelBuilder.Entity<TEntity>().ConfigureByConvention();
-        
-        ConfigureGlobalFilters<TEntity>(modelBuilder, mutableEntityType);
-    }
-    
-    protected virtual void ConfigureGlobalFilters<TEntity>(
-        ModelBuilder modelBuilder, 
-        IMutableEntityType mutableEntityType)            
-        	where TEntity : class
-    {
-        if (mutableEntityType.BaseType == null && 
-            ShouldFilterEntity<TEntity>(mutableEntityType))
-        {
-            var filterExpression = CreateFilterExpression<TEntity>();
-            if (filterExpression != null)
-            {
-                modelBuilder.Entity<TEntity>().HasQueryFilter(filterExpression);
-            }
-        }
-    }
-    
-    protected virtual void ConfigureValueConverter<TEntity>(
-        ModelBuilder modelBuilder, 
-        IMutableEntityType mutableEntityType)        
-        	where TEntity : class
-    {
-        if (mutableEntityType.BaseType == null &&
-            !typeof(TEntity).IsDefined(
-                typeof(DisableDateTimeNormalizationAttribute), true) &&
-            !typeof(TEntity).IsDefined(
-                typeof(OwnedAttribute), true) &&
-            !mutableEntityType.IsOwned())
-        {
-            if (Clock == null || !Clock.SupportsMultipleTimezone)
-            {
-                return;
-            }
-            
-            var dateTimeValueConverter = new AbpDateTimeValueConverter(Clock);
-            
-            var dateTimePropertyInfos = typeof(TEntity).GetProperties()
-                .Where(property =>
-                	(property.PropertyType == typeof(DateTime) ||
-                    property.PropertyType == typeof(DateTime?)) &&
-                    property.CanWrite &&
-                    !property.IsDefined(
-                        typeof(DisableDateTimeNormalizationAttribute), 
-                        true))
-                .ToList();
-            
-            dateTimePropertyInfos.ForEach(property =>
-            	{
-                    modelBuilder.Entity<TEntity>()
-                        .Property(property.Name)
-                        .HasConversion(dateTimeValueConverter);
-                });
-        }
-    }
-    
-    protected virtual void ConfigureValueGenerated<TEntity>(
-        ModelBuilder modelBuilder, 
-        IMutableEntityType mutableEntityType)            
-        	where TEntity : class
-    {
-        if (!typeof(IEntity<Guid>).IsAssignableFrom(typeof(TEntity)))
-        {
-            return;
-        }
-        
-        var idPropertyBuilder = 
-            modelBuilder.Entity<TEntity>().Property(x => 
-            	((IEntity<Guid>)x).Id);
-        if (idPropertyBuilder.Metadata.PropertyInfo
-            	.IsDefined(
-                    typeof(DatabaseGeneratedAttribute), 
-                    true))
-        {
-            return;
-        }
-        
-        idPropertyBuilder.ValueGeneratedNever();
-    }
-    
+               
     protected virtual bool 
         ShouldFilterEntity<TEntity>(
         	IMutableEntityType entityType) where TEntity : class
@@ -963,109 +1260,511 @@ public abstract class AbpDbContext<TDbContext>
 
 ```
 
-###### 2.2.3.1 initialize
+##### 2.4.1 initialize
 
-###### aaa. set audit property
+* 在创建 abp dbContext 是调用
 
 ```c#
-protected virtual void CheckAndSetId(EntityEntry entry)
+public abstract class AbpDbContext<TDbContext> 
 {
-    if (entry.Entity is IEntity<Guid> entityWithGuidId)
+    public virtual void Initialize(
+        AbpEfCoreDbContextInitializationContext initializationContext)
     {
-        TrySetGuidId(entry, entityWithGuidId);
+        // 设置 command timeout，
+        // 如果 initia  contex 中有值，
+        // database 中没有设置过，
+        // database 是 relational ？？？
+        if (initializationContext
+            	.UnitOfWork.Options.Timeout.HasValue &&
+            Database.IsRelational() &&
+            !Database.GetCommandTimeout().HasValue)
+        {
+            Database.SetCommandTimeout(
+                TimeSpan.FromMilliseconds(
+                    initializationContext
+                    	.UnitOfWork.Options.Timeout.Value));
+        }
+        // tracker cascade delete
+        ChangeTracker.CascadeDeleteTiming = CascadeTiming.OnSaveChanges;
+        // 订阅 ms ef core change tracker
+        ChangeTracker.Tracked += ChangeTracker_Tracked;
     }
 }
 
-protected virtual void TrySetGuidId(EntityEntry entry, IEntity<Guid> entity)
-{
-    if (entity.Id != default)
-    {
-        return;
-    }
-    
-    var idProperty = entry.Property("Id").Metadata.PropertyInfo;
-    
-    //Check for DatabaseGeneratedAttribute
-    var dbGeneratedAttr = ReflectionHelper
-        .GetSingleAttributeOrDefault
-        	<DatabaseGeneratedAttribute>(idProperty);
-    
-    if (dbGeneratedAttr != null && 
-        dbGeneratedAttr.DatabaseGeneratedOption != DatabaseGeneratedOption.None)
-    {
-        return;
-    }
-    
-    EntityHelper.TrySetId(
-        entity,
-        () => GuidGenerator.Create(),
-        true);
-}
-
-
-protected virtual void SetCreationAuditProperties(EntityEntry entry)
-    {
-        AuditPropertySetter?.SetCreationProperties(entry.Entity);
-    }
-    
-    protected virtual void SetModificationAuditProperties(EntityEntry entry)
-    {
-        AuditPropertySetter?.SetModificationProperties(entry.Entity);
-    }
-    
-    protected virtual void SetDeletionAuditProperties(EntityEntry entry)
-    {
-        AuditPropertySetter?.SetDeletionProperties(entry.Entity);
-    }
 ```
 
-###### bbb. event
+###### 2.4.1.1 change tracked
 
 ```c#
-protected virtual void AddDomainEvents(EntityChangeReport changeReport, object entityAsObj)
+public abstract class AbpDbContext<TDbContext> 
+{
+    // abp tracker，
+    // 跟踪 extra properties 变化
+    protected virtual void ChangeTracker_Tracked(
+        object sender, 
+        EntityTrackedEventArgs e)
     {
-        var generatesDomainEventsEntity = entityAsObj as IGeneratesDomainEvents;
-        if (generatesDomainEventsEntity == null)
+        FillExtraPropertiesForTrackedEntities(e);
+    }
+    
+    // 跟踪 extra properties 具体实现
+    protected virtual void FillExtraPropertiesForTrackedEntities(
+        EntityTrackedEventArgs e)
+    {
+        // 如果 (extra)entity type 为 null，忽略
+        var entityType = e.Entry.Metadata.ClrType;
+        if (entityType == null)
+        {
+            return;
+        }
+        // 如果 entity 不支持 extra properties，忽略
+        // 即，entity 没有实现 IHasExtraProperties 接口
+        if (!(e.Entry.Entity is IHasExtraProperties entity))
+        {
+            return;
+        }
+        // ???
+        if (!e.FromQuery)
+        {
+            return;
+        }
+        // 如果没有 objectExtensionManager，忽略
+        // 即，没有依赖 object extending 模块
+        var objectExtension = ObjectExtensionManager.Instance
+            .GetOrNull(entityType);
+        if (objectExtension == null)
         {
             return;
         }
         
-        var localEvents = generatesDomainEventsEntity.GetLocalEvents()?.ToArray();
-        if (localEvents != null && localEvents.Any())
+        // 遍历 extra property
+        foreach (var property in objectExtension.GetProperties())
         {
-            changeReport.DomainEvents.AddRange(localEvents.Select(eventData => new DomainEventEntry(entityAsObj, eventData)));
-            generatesDomainEventsEntity.ClearLocalEvents();
-        }
-        
-        var distributedEvents = generatesDomainEventsEntity.GetDistributedEvents()?.ToArray();
-        if (distributedEvents != null && distributedEvents.Any())
-        {
-            changeReport.DistributedEvents.AddRange(distributedEvents.Select(eventData => new DomainEventEntry(entityAsObj, eventData)));
-            generatesDomainEventsEntity.ClearDistributedEvents();
+            // 如果 property 不 mapped to field for ef core，忽略
+            if (!property.IsMappedToFieldForEfCore())
+            {
+                continue;
+            }
+            
+            /* Checking "currentValue != null" has a good advantage:
+            * Assume that you we already using a named extra property,
+            * then decided to create a field (entity extension) for it.
+            * In this way, it prevents to delete old value in the JSON and
+            * updates the field on the next save!
+            */
+            // 向 entity 更新 extra property
+            var currentValue = e.Entry.CurrentValues[property.Name];
+            if (currentValue != null)
+            {
+                entity.ExtraProperties[property.Name] = currentValue;
+            }
         }
     }
+}
+
 ```
 
+##### 2.4.2 on model creating
 
-
-###### 2.2.3.2 insert
+* 重写 ms ef core dbContext 对应方法
 
 ```c#
-protected virtual void ApplyAbpConceptsForAddedEntity(EntityEntry entry, EntityChangeReport changeReport)
+public abstract class AbpDbContext<TDbContext> 
+{
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        // 调用 ef core model creating
+        base.OnModelCreating(modelBuilder);
+        
+        /* abp 增加的配置 */
+        
+        // 设置 database provider
+        TrySetDatabaseProvider(modelBuilder);        
+        // override configure
+        foreach (var entityType in modelBuilder.Model.GetEntityTypes())
+        {
+            ConfigureBasePropertiesMethodInfo
+                .MakeGenericMethod(entityType.ClrType)
+                	.Invoke(
+                		this, 
+                		new object[] { modelBuilder, entityType });
+            
+            ConfigureValueConverterMethodInfo
+                .MakeGenericMethod(entityType.ClrType)
+                	.Invoke(
+                		this, 
+                		new object[] { modelBuilder, entityType });
+            
+            ConfigureValueGeneratedMethodInfo
+                .MakeGenericMethod(entityType.ClrType)
+                	.Invoke(
+                		this, 
+                		new object[] { modelBuilder, entityType });
+        }
+    }       
+}
+
+```
+
+###### 2.4.2.1 set database provider
+
+* 获取 database provider （枚举 name）
+
+```c#
+public abstract class AbpDbContext<TDbContext> 
+{
+    protected virtual void TrySetDatabaseProvider(
+        ModelBuilder modelBuilder)
+    {
+        // 获取 db provider(name)
+        var provider = GetDatabaseProviderOrNull(modelBuilder);
+        
+        // 如果 db provider(name) 不为 null，
+        // 使用 ms ef core. modelBuilder 中的 setDbProvider 方法
+        if (provider != null)
+        {
+            modelBuilder.SetDatabaseProvider(provider.Value);
+        }
+    }
+        
+    protected virtual EfCoreDatabaseProvider? 
+        GetDatabaseProviderOrNull(ModelBuilder modelBuilder)
+    {        
+        switch (Database.ProviderName)	
+        {
+            case "Microsoft.EntityFrameworkCore.SqlServer":
+                return EfCoreDatabaseProvider.SqlServer;
+            case "Npgsql.EntityFrameworkCore.PostgreSQL":
+                return EfCoreDatabaseProvider.PostgreSql;
+            case "Pomelo.EntityFrameworkCore.MySql":
+                return EfCoreDatabaseProvider.MySql;
+            case "Oracle.EntityFrameworkCore":
+            case "Devart.Data.Oracle.Entity.EFCore":
+                return EfCoreDatabaseProvider.Oracle;
+            case "Microsoft.EntityFrameworkCore.Sqlite":
+                return EfCoreDatabaseProvider.Sqlite;
+            case "Microsoft.EntityFrameworkCore.InMemory":
+                return EfCoreDatabaseProvider.InMemory;
+            case "FirebirdSql.EntityFrameworkCore.Firebird":
+                return EfCoreDatabaseProvider.Firebird;
+            case "Microsoft.EntityFrameworkCore.Cosmos":
+                return EfCoreDatabaseProvider.Cosmos;
+            default:
+                return null;
+        }
+    }
+}
+
+```
+
+###### 2.4.2.2 configure base properties
+
+```c#
+public abstract class AbpDbContext<TDbContext> 
+{
+    protected virtual void ConfigureBaseProperties<TEntity>(
+        ModelBuilder modelBuilder, 
+        IMutableEntityType mutableEntityType)            
+        	where TEntity : class
+    {
+        if (mutableEntityType.IsOwned())
+        {
+            return;
+        }
+        
+        if (!typeof(IEntity).IsAssignableFrom(typeof(TEntity)))
+        {
+            return;
+        }
+        
+        modelBuilder.Entity<TEntity>().ConfigureByConvention();
+        
+        ConfigureGlobalFilters<TEntity>(
+            modelBuilder, 
+            mutableEntityType);
+    }
+}
+    
+```
+
+###### 2.4.2.3 confiure global filters
+
+```c#
+public abstract class AbpDbContext<TDbContext> 
+{
+    protected virtual void ConfigureGlobalFilters<TEntity>(
+        ModelBuilder modelBuilder, 
+        IMutableEntityType mutableEntityType)            
+        	where TEntity : class
+    {
+        if (mutableEntityType.BaseType == null && 
+            ShouldFilterEntity<TEntity>(mutableEntityType))
+        {
+            var filterExpression = CreateFilterExpression<TEntity>();
+            if (filterExpression != null)
+            {
+                modelBuilder.Entity<TEntity>()
+                    .HasQueryFilter(filterExpression);
+            }
+        }
+    }
+}
+
+```
+
+###### 2.4.2.3 configure value converter
+
+```c#
+public abstract class AbpDbContext<TDbContext> 
+{
+    protected virtual void ConfigureValueConverter<TEntity>(
+        ModelBuilder modelBuilder, 
+        IMutableEntityType mutableEntityType)        
+        	where TEntity : class
+    {
+        if (mutableEntityType.BaseType == null &&
+            !typeof(TEntity).IsDefined(
+                typeof(DisableDateTimeNormalizationAttribute), true) &&
+            !typeof(TEntity).IsDefined(
+                typeof(OwnedAttribute), true) &&
+            !mutableEntityType.IsOwned())
+        {
+            if (Clock == null || !Clock.SupportsMultipleTimezone)
+            {
+                return;
+            }
+            
+            var dateTimeValueConverter = 
+                new AbpDateTimeValueConverter(Clock);
+            
+            var dateTimePropertyInfos = typeof(TEntity).GetProperties()
+                .Where(property =>
+                	(property.PropertyType == typeof(DateTime) ||
+                    property.PropertyType == typeof(DateTime?)) &&
+                    property.CanWrite &&
+                    !property.IsDefined(
+                        typeof(DisableDateTimeNormalizationAttribute), 
+                        true))
+                .ToList();
+            
+            dateTimePropertyInfos.ForEach(property =>
+            	{
+                    modelBuilder.Entity<TEntity>()
+                        .Property(property.Name)
+                        .HasConversion(dateTimeValueConverter);
+                });
+        }
+    }
+}
+
+```
+
+###### 2.4.2.4 configure value generated
+
+```c#
+public abstract class AbpDbContext<TDbContext> 
+{
+    protected virtual void ConfigureValueGenerated<TEntity>(
+        ModelBuilder modelBuilder, 
+        IMutableEntityType mutableEntityType)            
+        	where TEntity : class
+    {
+        if (!typeof(IEntity<Guid>).IsAssignableFrom(typeof(TEntity)))
+        {
+            return;
+        }
+        
+        var idPropertyBuilder = 
+            modelBuilder.Entity<TEntity>().Property(x => 
+            	((IEntity<Guid>)x).Id);
+        if (idPropertyBuilder.Metadata.PropertyInfo
+            	.IsDefined(
+                    typeof(DatabaseGeneratedAttribute), 
+                    true))
+        {
+            return;
+        }
+        
+        idPropertyBuilder.ValueGeneratedNever();
+    }
+}
+
+```
+
+##### 2.4.3 save changes
+
+* 重写 ms ef core dbContext 对应方法
+
+```c#
+public abstract class AbpDbContext<TDbContext> 
+{
+    public async override Task<int> SaveChangesAsync(
+        bool acceptAllChangesOnSuccess, 
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var auditLog = AuditingManager?.Current?.Log;
+            
+            // 创建 entity change list
+            List<EntityChangeInfo> entityChangeList = null;
+            if (auditLog != null)
+            {
+                entityChangeList = EntityHistoryHelper.
+                    CreateChangeList(ChangeTracker.Entries().ToList());
+            }
+            
+            // 执行 abp concepts（audit property、domain event等）
+            var changeReport = ApplyAbpConcepts();
+            
+            // 调用 ms ef core 的 save changes 方法
+            var result = await base.SaveChangesAsync(
+                acceptAllChangesOnSuccess, 
+                cancellationToken);
+            
+            // 发布 entity change event
+            await EntityChangeEventHelper
+                .TriggerEventsAsync(changeReport);
+            
+            // 记录 entity change 到自动审计日志
+            if (auditLog != null)
+            {
+                // 更新 entity change list
+                EntityHistoryHelper
+                    .UpdateChangeList(entityChangeList);
+                // 向 audit log 添加 entity change list
+                auditLog.EntityChanges
+                    .AddRange(entityChangeList);
+                // 打印日志
+                Logger.LogDebug(
+                    $"Added {entityChangeList.Count} entity changes 
+                    to the current audit log");
+            }
+            
+            return result;
+        }
+        catch (DbUpdateConcurrencyException ex)
+        {
+            throw new AbpDbConcurrencyException(ex.Message, ex);
+        }
+        finally
+        {
+            // 设置 auto tracker detected 为 True
+            ChangeTracker.AutoDetectChangesEnabled = true;
+        }
+    }
+}
+    
+```
+
+###### 2.4.3.1 apply abp concepts
+
+```c#
+public abstract class AbpDbContext<TDbContext> 
+{
+    protected virtual EntityChangeReport ApplyAbpConcepts()
+    {
+        var changeReport = new EntityChangeReport();
+        
+        foreach (var entry in ChangeTracker.Entries().ToList())
+        {
+            ApplyAbpConcepts(entry, changeReport);
+        }
+        
+        return changeReport;
+    }
+    
+    protected virtual void ApplyAbpConcepts(
+        EntityEntry entry, 
+        EntityChangeReport changeReport)
+    {
+        switch (entry.State)
+        {
+            case EntityState.Added:
+                ApplyAbpConceptsForAddedEntity(entry, changeReport);
+                break;
+            case EntityState.Modified:
+                ApplyAbpConceptsForModifiedEntity(entry, changeReport);
+                break;
+            case EntityState.Deleted:
+                ApplyAbpConceptsForDeletedEntity(entry, changeReport);
+                break;
+        }
+        
+        HandleExtraPropertiesOnSave(entry);
+        
+        AddDomainEvents(changeReport, entry.Entity);
+    }                        
+}
+
+```
+
+###### 2.4.3.2 insert concept
+
+```c#
+public abstract class AbpDbContext<TDbContext> 
+{
+    protected virtual void CheckAndSetId(EntityEntry entry)
+    {
+        if (entry.Entity is IEntity<Guid> entityWithGuidId)
+        {
+            TrySetGuidId(entry, entityWithGuidId);
+        }
+    }
+    
+    protected virtual void TrySetGuidId(
+        EntityEntry entry, 
+        IEntity<Guid> entity)
+    {
+        if (entity.Id != default)
+        {
+            return;
+        }
+        
+        var idProperty = entry.Property("Id").Metadata.PropertyInfo;
+        
+        //Check for DatabaseGeneratedAttribute
+        var dbGeneratedAttr = ReflectionHelper
+            .GetSingleAttributeOrDefault
+            <DatabaseGeneratedAttribute>(idProperty);
+        
+        if (dbGeneratedAttr != null && 
+            dbGeneratedAttr.DatabaseGeneratedOption != 
+            atabaseGeneratedOption.None)
+        {
+            return;
+        }
+        
+        EntityHelper.TrySetId(
+            entity,
+            () => GuidGenerator.Create(),
+            true);
+    }
+    
+    protected virtual void ApplyAbpConceptsForAddedEntity(
+        EntityEntry entry, 
+        EntityChangeReport changeReport)
     {
         CheckAndSetId(entry);
         SetConcurrencyStampIfNull(entry);
         SetCreationAuditProperties(entry);
-        changeReport.ChangedEntities.Add(new EntityChangeEntry(entry.Entity, EntityChangeType.Created));
+        changeReport.ChangedEntities.Add(
+            new EntityChangeEntry(
+                entry.Entity, 
+                EntityChangeType.Created));
     }
+}
+
 ```
 
-
-
-###### 2.2.3.3 delete
+###### 2.4.3.3 delete concept
 
 ```c#
-protected virtual void ApplyAbpConceptsForDeletedEntity(EntityEntry entry, EntityChangeReport changeReport)
+public abstract class AbpDbContext<TDbContext> 
+{
+    protected virtual void ApplyAbpConceptsForDeletedEntity(
+        EntityEntry entry, 
+        EntityChangeReport changeReport)
     {
         if (TryCancelDeletionForSoftDelete(entry))
         {
@@ -1073,8 +1772,262 @@ protected virtual void ApplyAbpConceptsForDeletedEntity(EntityEntry entry, Entit
             SetDeletionAuditProperties(entry);
         }
         
-        changeReport.ChangedEntities.Add(new EntityChangeEntry(entry.Entity, EntityChangeType.Deleted));
+        changeReport.ChangedEntities.Add(
+            new EntityChangeEntry(
+                entry.Entity, 
+                EntityChangeType.Deleted));
     }
+}
+
+```
+
+###### 2.4.3.4 update concept
+
+```c#
+public abstract class AbpDbContext<TDbContext> 
+{
+    protected virtual void ApplyAbpConceptsForModifiedEntity(
+        EntityEntry entry, 
+        EntityChangeReport changeReport)
+    {
+        UpdateConcurrencyStamp(entry);
+        SetModificationAuditProperties(entry);
+        
+        if (entry.Entity is ISoftDelete && 
+            entry.Entity.As<ISoftDelete>().IsDeleted)
+        {
+            SetDeletionAuditProperties(entry);
+            changeReport.ChangedEntities.Add(
+                new EntityChangeEntry(
+                    entry.Entity, 
+                    EntityChangeType.Deleted));
+        }
+        else
+        {
+            changeReport.ChangedEntities.Add(
+                new EntityChangeEntry(
+                    entry.Entity, 
+                    EntityChangeType.Updated));
+        }
+    }
+}
+
+```
+
+###### 2.4.3.5 handle extra
+
+```c#
+public abstract class AbpDbContext<TDbContext> 
+{
+    protected virtual void HandleExtraPropertiesOnSave(
+        EntityEntry entry)
+    {
+        if (entry.State.IsIn(
+            EntityState.Deleted, 
+            EntityState.Unchanged))
+        {
+            return;
+        }
+        
+        var entityType = entry.Metadata.ClrType;
+        if (entityType == null)
+        {
+            return;
+        }
+        
+        if (!(entry.Entity is IHasExtraProperties entity))
+        {
+            return;
+        }
+        
+        var objectExtension = ObjectExtensionManager.Instance
+            .GetOrNull(entityType);
+        if (objectExtension == null)
+        {
+            return;
+        }
+        
+        var efMappedProperties = ObjectExtensionManager.Instance
+            .GetProperties(entityType)
+            	.Where(p => p.IsMappedToFieldForEfCore());
+        
+        foreach (var property in efMappedProperties)
+        {
+            if (!entity.HasProperty(property.Name))
+            {
+                continue;
+            }
+            
+            var entryProperty = entry.Property(property.Name);
+            var entityProperty = entity.GetProperty(property.Name);
+            if (entityProperty == null)
+            {
+                entryProperty.CurrentValue = null;
+                continue;
+            }
+            
+            if (entryProperty.Metadata.ClrType == 
+                entityProperty.GetType())
+            {
+                entryProperty.CurrentValue = entityProperty;
+            }
+            else
+            {
+                if (TypeHelper
+                    	.IsPrimitiveExtended(
+                            entryProperty.Metadata.ClrType, 
+                            includeEnums: true))
+                {
+                    var conversionType = entryProperty.Metadata.ClrType;
+                    if (TypeHelper.IsNullable(conversionType))
+                    {
+                        conversionType = conversionType
+                            .GetFirstGenericArgumentIfNullable();
+                    }
+                    
+                    if (conversionType == typeof(Guid))
+                    {
+                        entryProperty.CurrentValue = 
+                            TypeDescriptor.GetConverter(conversionType)
+                            	.ConvertFromInvariantString(
+                            		entityProperty.ToString());
+                    }
+                    else
+                    {
+                        entryProperty.CurrentValue = 
+                            Convert.ChangeType(
+                            	entityProperty, 
+                            	conversionType, 
+                            	CultureInfo.InvariantCulture);
+                    }
+                }
+            }
+        }
+    }
+}
+        
+```
+
+###### 2.4.3.6 add domain events
+
+```c#
+public abstract class AbpDbContext<TDbContext> 
+{
+    protected virtual void AddDomainEvents(
+        EntityChangeReport changeReport, 
+        object entityAsObj)
+    {
+        var generatesDomainEventsEntity = 
+            entityAsObj as IGeneratesDomainEvents;
+        if (generatesDomainEventsEntity == null)
+        {
+            return;
+        }
+        
+        var localEvents = generatesDomainEventsEntity
+            .GetLocalEvents()?.ToArray();
+        if (localEvents != null && localEvents.Any())
+        {
+            changeReport.DomainEvents
+                .AddRange(localEvents.Select(eventData => 
+                	new DomainEventEntry(
+                        entityAsObj, 
+                        eventData)));
+            
+            generatesDomainEventsEntity.ClearLocalEvents();
+        }
+        
+        var distributedEvents = generatesDomainEventsEntity
+            .GetDistributedEvents()?.ToArray();
+        if (distributedEvents != null && distributedEvents.Any())
+        {
+            changeReport.DistributedEvents
+                .AddRange(distributedEvents.Select(eventData => 
+                	new DomainEventEntry(
+                        entityAsObj, 
+                        eventData)));
+            
+            generatesDomainEventsEntity.ClearDistributedEvents();
+        }
+    }
+}
+
+```
+
+###### 2.4.3.7 设置 audit property
+
+```c#
+public abstract class AbpDbContext<TDbContext> 
+{
+    protected virtual void SetCreationAuditProperties(
+        EntityEntry entry)
+    {
+        AuditPropertySetter?
+            .SetCreationProperties(entry.Entity);
+    }
+    
+    protected virtual void SetModificationAuditProperties(
+        EntityEntry entry)
+    {
+        AuditPropertySetter?
+            .SetModificationProperties(entry.Entity);
+    }
+    
+    protected virtual void SetDeletionAuditProperties(
+        EntityEntry entry)
+    {
+        AuditPropertySetter?
+            .SetDeletionProperties(entry.Entity);
+    }
+}
+```
+
+###### 2.4.3.8 设置 concurrent stamp
+
+```c#
+public abstract class AbpDbContext<TDbContext> 
+{
+    protected virtual void UpdateConcurrencyStamp(EntityEntry entry)
+    {
+        var entity = entry.Entity as IHasConcurrencyStamp;
+        if (entity == null)
+        {
+            return;
+        }
+        
+        Entry(entity)
+            .Property(x => x.ConcurrencyStamp)
+            	.OriginalValue = entity.ConcurrencyStamp;
+        
+        entity.ConcurrencyStamp = Guid.NewGuid().ToString("N");
+    }
+    
+    protected virtual void SetConcurrencyStampIfNull(
+        EntityEntry entry)
+    {
+        var entity = entry.Entity as IHasConcurrencyStamp;
+        if (entity == null)
+        {
+            return;
+        }
+        
+        if (entity.ConcurrencyStamp != null)
+        {
+            return;
+        }
+        
+        entity.ConcurrencyStamp = Guid.NewGuid().ToString("N");
+    }
+}
+
+```
+
+
+
+###### aaa delete
+
+```c#
+
     
     protected virtual bool IsHardDeleted(EntityEntry entry)
     {
@@ -1090,474 +2043,416 @@ protected virtual void ApplyAbpConceptsForDeletedEntity(EntityEntry entry, Entit
 
 
 
-###### 2.2.3.4 update
+#### 2.5 注册abp db context 
+
+##### 2.5.1 abp ef core 模块
 
 ```c#
-protected virtual void ApplyAbpConceptsForModifiedEntity(EntityEntry entry, EntityChangeReport changeReport)
+[DependsOn(typeof(AbpDddDomainModule))]
+public class AbpEntityFrameworkCoreModule : AbpModule
+{
+    public override void ConfigureServices(
+        ServiceConfigurationContext context)
     {
-        UpdateConcurrencyStamp(entry);
-        SetModificationAuditProperties(entry);
+        // 注册并配置 abp dbContext options
+        Configure<AbpDbContextOptions>(options =>
+        	{
+                options.PreConfigure(
+                    abpDbContextConfigurationContext =>
+                	{
+                    	abpDbContextConfigurationContext
+                        	.DbContextOptions
+                        		.ConfigureWarnings(warnings =>
+                        		{
+                                	warnings.Ignore(
+                                    	CoreEventId
+                                        	.LazyLoadOnDisposedContextWarning);
+                                });
+                    });
+            });
         
-        if (entry.Entity is ISoftDelete && entry.Entity.As<ISoftDelete>().IsDeleted)
+        // 注册 uow dbContext provider，
+        // 暴露为 IDbContextProvider
+        context.Services.TryAddTransient(
+            typeof(IDbContextProvider<>), 
+            typeof(UnitOfWorkDbContextProvider<>));
+    }
+}
+
+```
+
+##### 2.5.2 dbcontext options
+
+```c#
+public class AbpDbContextOptions
+{
+    internal List<Action<AbpDbContextConfigurationContext>> 
+        DefaultPreConfigureActions { get; set; }    
+    internal Action<AbpDbContextConfigurationContext> 
+        DefaultConfigureAction { get; set; }
+    
+    internal Dictionary<Type, List<object>> 
+        PreConfigureActions { get; set; }    
+    internal Dictionary<Type, object> 
+        ConfigureActions { get; set; }
+    
+    public AbpDbContextOptions()
+    {
+        DefaultPreConfigureActions = new List<Action<AbpDbContextConfigurationContext>>();
+        
+        PreConfigureActions = new Dictionary<Type, List<object>>();
+        ConfigureActions = new Dictionary<Type, object>();
+    }
+    
+    public void PreConfigure(
+        [NotNull] Action<AbpDbContextConfigurationContext> action)
+    {
+        Check.NotNull(action, nameof(action));        
+        DefaultPreConfigureActions.Add(action);
+    }    
+    public void Configure(
+        [NotNull] Action<AbpDbContextConfigurationContext> action)
+    {
+        Check.NotNull(action, nameof(action));        
+        DefaultConfigureAction = action;
+    }
+    
+    public void PreConfigure<TDbContext>(
+        [NotNull] Action<AbpDbContextConfigurationContext<TDbContext>> action)            
+        	where TDbContext : AbpDbContext<TDbContext>
+    {
+        Check.NotNull(action, nameof(action));
+        
+        var actions = PreConfigureActions.GetOrDefault(typeof(TDbContext));
+        if (actions == null)
         {
-            SetDeletionAuditProperties(entry);
-            changeReport.ChangedEntities.Add(new EntityChangeEntry(entry.Entity, EntityChangeType.Deleted));
+            PreConfigureActions[typeof(TDbContext)] = actions = new List<object>();
         }
+        
+        actions.Add(action);
+    }
+    
+    public void Configure<TDbContext>(
+        [NotNull] Action<AbpDbContextConfigurationContext<TDbContext>> action)     
+        	where TDbContext : AbpDbContext<TDbContext>
+    {
+        Check.NotNull(action, nameof(action));        
+        ConfigureActions[typeof(TDbContext)] = action;
+    }
+}
+
+```
+
+###### 2.5.2.1 dbContext configuration context
+
+```c#
+public class AbpDbContextConfigurationContext : IServiceProviderAccessor
+{
+    public IServiceProvider ServiceProvider { get; }
+    
+    public string ConnectionString { get; }    
+    public string ConnectionStringName { get; }
+    
+    public DbConnection ExistingConnection { get; }
+    
+    public DbContextOptionsBuilder DbContextOptions { get; protected set; }
+    
+    public AbpDbContextConfigurationContext(
+        [NotNull] string connectionString,
+        [NotNull] IServiceProvider serviceProvider,
+        [CanBeNull] string connectionStringName,
+        [CanBeNull]DbConnection existingConnection)
+    {
+        ConnectionString = connectionString;
+        ServiceProvider = serviceProvider;
+        ConnectionStringName = connectionStringName;
+        ExistingConnection = existingConnection;
+        
+        DbContextOptions = new DbContextOptionsBuilder()
+            .UseLoggerFactory(
+            	serviceProvider
+            		.GetRequiredService<ILoggerFactory>());
+    }
+}
+
+public class AbpDbContextConfigurationContext<TDbContext> 
+    : AbpDbContextConfigurationContext    
+        where TDbContext : AbpDbContext<TDbContext>
+{
+    public new DbContextOptionsBuilder<TDbContext> 
+        DbContextOptions => 
+        	(DbContextOptionsBuilder<TDbContext>)base.DbContextOptions;
+
+    public AbpDbContextConfigurationContext(
+        string connectionString,
+        [NotNull] IServiceProvider serviceProvider,
+        [CanBeNull] string connectionStringName,
+        [CanBeNull] DbConnection existingConnection)        
+        	: base(            
+                connectionString,
+                serviceProvider,             
+                connectionStringName,             
+                existingConnection)
+    {
+        base.DbContextOptions = 
+            new DbContextOptionsBuilder<TDbContext>()
+            	.UseLoggerFactory(
+            		serviceProvider
+            			.GetRequiredService<ILoggerFactory>());
+    }
+}
+
+```
+
+
+
+#### 2.8 dbContext provider
+
+##### 2.8.1 IDbContextProvider 接口
+
+```c#
+public interface IDbContextProvider<out TDbContext>        
+    where TDbContext : IEfCoreDbContext
+{
+    TDbContext GetDbContext();
+}
+
+```
+
+##### 2.8.2 DbContextProvider 实现
+
+```c#
+public class UnitOfWorkDbContextProvider<TDbContext> 
+    : IDbContextProvider<TDbContext>        
+        where TDbContext : IEfCoreDbContext
+{
+    // 注入 uow manager，conn string resolver
+    private readonly IUnitOfWorkManager _unitOfWorkManager;
+    private readonly IConnectionStringResolver _connectionStringResolver;    
+    public UnitOfWorkDbContextProvider(
+        IUnitOfWorkManager unitOfWorkManager,
+        IConnectionStringResolver connectionStringResolver)
+    {
+        _unitOfWorkManager = unitOfWorkManager;
+        _connectionStringResolver = connectionStringResolver;
+    }
+}
+
+```
+
+###### 2.8.2.1 get dbContext
+
+```c#
+public class UnitOfWorkDbContextProvider<TDbContext> 
+{
+    public TDbContext GetDbContext()
+    {
+        // 获取当前 uow.current，
+        // 如果 uow.current 为 null，抛出异常
+        var unitOfWork = _unitOfWorkManager.Current;
+        if (unitOfWork == null)
+        {
+            throw new AbpException(
+                "A DbContext can only be created inside a unit of work!");
+        }
+        
+        // 获取 conn string
+        var connectionStringName = ConnectionStringNameAttribute
+            .GetConnStringName<TDbContext>();           
+        var connectionString = _connectionStringResolver
+            .Resolve(connectionStringName);
+        
+        // 获取 database api，
+        // 如果没有，添加
+        var dbContextKey = $"typeof(TDbContext).FullName}_{connectionString}";        
+        var databaseApi = unitOfWork.GetOrAddDatabaseApi(
+                dbContextKey,
+                () => new EfCoreDatabaseApi<TDbContext>(
+                    CreateDbContext(
+                        unitOfWork, 
+                        connectionStringName, 
+                        connectionString)));
+        
+        return ((EfCoreDatabaseApi<TDbContext>)databaseApi).DbContext;
+    }
+}
+
+```
+
+###### 2.8.2.2 create dbContext
+
+```c#
+public class UnitOfWorkDbContextProvider<TDbContext> 
+{
+    // 使用指定的 connStringName、connString 创建 dbContext，
+    // -> createDbContext(unitOfWork)
+    private TDbContext CreateDbContext(
+        IUnitOfWork unitOfWork, 
+        string connectionStringName, 
+        string connectionString)
+    {
+        // 创建 creationContext，
+        // with connStringName, connString
+        var creationContext = new DbContextCreationContext(
+            connectionStringName, 
+            connectionString);
+        
+        using (DbContextCreationContext.Use(creationContext))
+        {
+            // 创建 IAbpEfCoreDbContext
+            var dbContext = CreateDbContext(unitOfWork);
+            
+            // IAbpEfCoreDbContext.Initialize
+            if (dbContext is IAbpEfCoreDbContext abpEfCoreDbContext)
+            {
+                abpEfCoreDbContext.Initialize(
+                    new AbpEfCoreDbContextInitializationContext(
+                        	unitOfWork));
+            }
+            
+            return dbContext;
+        }
+    }
+    
+    // 使用指定的 uow 创建 dbContext
+    private TDbContext CreateDbContext(IUnitOfWork unitOfWork)
+    {
+        
+        return unitOfWork.Options.IsTransactional
+            // 如果 uow 支持 transaction，
+            // -> createDbContextWithTransaction(uow) 
+            ? CreateDbContextWithTransaction(unitOfWork)
+            // 否则，从 ioc 解析 TDbContext
+            : unitOfWork.ServiceProvider
+                .GetRequiredService<TDbContext>();
+    }       
+    
+    // 创建 dbContext with transaction                    
+    public TDbContext CreateDbContextWithTransaction(
+        IUnitOfWork unitOfWork) 
+    {
+        // 获取 transaction api
+        var transactionApiKey = $"EntityFrameworkCore_
+        	{DbContextCreationContext.Current.ConnectionString}";
+        var activeTransaction = unitOfWork
+            .FindTransactionApi(transactionApiKey) 
+        	as EfCoreTransactionApi;
+        
+        // 如果 transaction api 为 null
+        if (activeTransaction == null)
+        {
+            // 从 ioc 解析 TDbContext
+            var dbContext = unitOfWork.ServiceProvider
+                .GetRequiredService<TDbContext>();
+            // 创建 db transaction
+            var dbtransaction = unitOfWork.Options
+                .IsolationLevel.HasValue
+                	? dbContext.Database
+                		.BeginTransaction(
+                			unitOfWork.Options.IsolationLevel.Value)
+                	: dbContext.Database
+                        .BeginTransaction();
+            // 创建 transaction api
+            unitOfWork.AddTransactionApi(
+                transactionApiKey,
+                new EfCoreTransactionApi(
+                    dbtransaction,
+                    dbContext));
+            
+            return dbContext;
+        }
+        // transaction api 不为空
         else
         {
-            changeReport.ChangedEntities.Add(new EntityChangeEntry(entry.Entity, EntityChangeType.Updated));
-        }
-    }
-```
-
-
-
-###### 2.2.3.5 get or find
-
-```c#
-
-```
-
-#### 2.3 ef core repository
-
-##### 2.3.1 EfCoreRepo 接口
-
-```c#
-public interface IEfCoreRepository<TEntity> 
-    : IRepository<TEntity>        
-        where TEntity : class, IEntity
-{
-    DbContext DbContext { get; }    
-    DbSet<TEntity> DbSet { get; }
-}
-
-public interface IEfCoreRepository<TEntity, TKey> 
-    : IEfCoreRepository<TEntity>, IRepository<TEntity, TKey>        
-        where TEntity : class, IEntity<TKey>
-{    
-}
-
-```
-
-##### 2.3.2 EfCoreRepo(TEntity)
-
-```c#
-public class EfCoreRepository<TDbContext, TEntity> 
-    : RepositoryBase<TEntity>, 
-	  IEfCoreRepository<TEntity>, 
-	  IAsyncEnumerable<TEntity>        
-          where TDbContext : IEfCoreDbContext        
-          where TEntity : class, IEntity
-{
-    DbContext IEfCoreRepository<TEntity>.DbContext => 
-        DbContext.As<DbContext>();
-              
-    public virtual DbSet<TEntity> DbSet => 
-        DbContext.Set<TEntity>();        
-    
-    protected virtual TDbContext DbContext => 
-        _dbContextProvider.GetDbContext();
-    
-    protected virtual AbpEntityOptions<TEntity> AbpEntityOptions => 
-        _entityOptionsLazy.Value;
-    
-    private readonly IDbContextProvider<TDbContext> _dbContextProvider;
-    private readonly Lazy<AbpEntityOptions<TEntity>> _entityOptionsLazy;
-    
-    public virtual IGuidGenerator GuidGenerator { get; set; }
-    
-    public EfCoreRepository(IDbContextProvider<TDbContext> dbContextProvider)
-    {
-        _dbContextProvider = dbContextProvider;
-        
-        GuidGenerator = SimpleGuidGenerator.Instance;
-        
-        _entityOptionsLazy = new Lazy<AbpEntityOptions<TEntity>>(
-            () => ServiceProvider
-            	.GetRequiredService<IOptions<AbpEntityOptions>>()
-            		.Value.GetOrNull<TEntity>() 
-            			?? AbpEntityOptions<TEntity>.Empty);
-    }
-    
-                                
-    protected override IQueryable<TEntity> GetQueryable()
-    {
-        return DbSet.AsQueryable();
-    }
-    
-    public IAsyncEnumerator<TEntity> GetAsyncEnumerator(
-        CancellationToken cancellationToken = default)
-    {
-        return DbSet.AsAsyncEnumerable().GetAsyncEnumerator(cancellationToken);
-    }
+            DbContextCreationContext.Current.ExistingConnection = 
+                activeTransaction
+                	.DbContextTransaction
+                		.GetDbTransaction().Connection;
             
-    public virtual async Task EnsureCollectionLoadedAsync<TProperty>(
-        TEntity entity,
-        Expression<Func<TEntity, IEnumerable<TProperty>>> propertyExpression,
-        CancellationToken cancellationToken = default)        
-        	where TProperty : class
-    {
-        await DbContext.Entry(entity)
-            .Collection(propertyExpression)
-            .LoadAsync(GetCancellationToken(cancellationToken));
-    }
-    
-    public virtual async Task EnsurePropertyLoadedAsync<TProperty>(
-        TEntity entity,
-        Expression<Func<TEntity, TProperty>> propertyExpression,
-        CancellationToken cancellationToken = default)        
-        	where TProperty : class
-    {
-        await DbContext.Entry(entity)
-            .Reference(propertyExpression)
-            .LoadAsync(GetCancellationToken(cancellationToken));
-    }                            
-}
-
-```
-
-###### 2.3.2.1 insert
-
-```c#
-public class EfCoreRepository<TDbContext, TEntity> 
-{
-    protected virtual void CheckAndSetId(TEntity entity)
-    {
-        if (entity is IEntity<Guid> entityWithGuidId)
-        {
-            TrySetGuidId(entityWithGuidId);
-        }
-    }
-    
-    protected virtual void TrySetGuidId(IEntity<Guid> entity)
-    {
-        if (entity.Id != default)
-        {
-            return;
-        }
-        
-        EntityHelper.TrySetId(
-            entity,
-            () => GuidGenerator.Create(),
-            true);
-    }
-    
-    public async override Task<TEntity> InsertAsync(
-        TEntity entity, 
-        bool autoSave = false, 
-        CancellationToken cancellationToken = default)
-    {
-        CheckAndSetId(entity);
-        
-        var savedEntity = DbSet.Add(entity).Entity;
-        
-        if (autoSave)
-        {
-            await DbContext.SaveChangesAsync(
-                GetCancellationToken(cancellationToken));
-        }
-        
-        return savedEntity;
-    }
-}
-
-```
-
-###### 2.3.2.2 delete
-
-```c#
-public class EfCoreRepository<TDbContext, TEntity> 
-{
-    public async override Task DeleteAsync(
-        TEntity entity, 
-        bool autoSave = false, 
-        CancellationToken cancellationToken = default)
-    {
-        DbSet.Remove(entity);
-        
-        if (autoSave)
-        {
-            await DbContext.SaveChangesAsync(
-                GetCancellationToken(cancellationToken));
-        }
-    }
-    
-    public async override Task DeleteAsync(
-        Expression<Func<TEntity, bool>> predicate, 
-        bool autoSave = false, 
-        CancellationToken cancellationToken = default)
-    {
-        var entities = await GetQueryable()
-            .Where(predicate)
-            .ToListAsync(GetCancellationToken(cancellationToken));
-        
-        foreach (var entity in entities)
-        {
-            DbSet.Remove(entity);
-        }
-        
-        if (autoSave)
-        {
-            await DbContext.SaveChangesAsync(
-                GetCancellationToken(cancellationToken));
-        }
-    }
-}
-```
-
-###### 2.3.2.3 update
-
-```c#
-public class EfCoreRepository<TDbContext, TEntity> 
-{
-    public async override Task<TEntity> UpdateAsync(
-        TEntity entity, 
-        bool autoSave = false, 
-        CancellationToken cancellationToken = default)
-    {
-        DbContext.Attach(entity);
-        
-        var updatedEntity = DbContext.Update(entity).Entity;
-        
-        if (autoSave)
-        {
-            await DbContext.SaveChangesAsync(
-                GetCancellationToken(cancellationToken));
-        }
-        
-        return updatedEntity;
-    }
-}
-```
-
-
-
-###### 2.3.2.4 get or find
-
-```c#
-public class EfCoreRepository<TDbContext, TEntity> 
-{
-    public override IQueryable<TEntity> WithDetails()
-    {
-        if (AbpEntityOptions.DefaultWithDetailsFunc == null)
-        {
-            return base.WithDetails();
-        }
-        
-        return AbpEntityOptions.DefaultWithDetailsFunc(GetQueryable());
-    }
-    
-    public override IQueryable<TEntity> WithDetails(
-        params Expression<Func<TEntity, 
-        object>>[] propertySelectors)
-    {
-        var query = GetQueryable();
-        
-        if (!propertySelectors.IsNullOrEmpty())
-        {
-            foreach (var propertySelector in propertySelectors)
+            // 从 ioc 解析 TDbContext
+            var dbContext = unitOfWork.ServiceProvider
+                .GetRequiredService<TDbContext>();
+            
+            if (dbContext.As<DbContext>()
+                	.HasRelationalTransactionManager())
             {
-                query = query.Include(propertySelector);
+                dbContext.Database.UseTransaction(
+                    activeTransaction
+                    	.DbContextTransaction
+                    		.GetDbTransaction());
             }
+            else
+            {
+                //TODO: Why not using the new created transaction?
+                dbContext.Database.BeginTransaction(); 
+            }
+            
+            activeTransaction.AttendedDbContexts.Add(dbContext);
+            
+            return dbContext;
         }
-        
-        return query;
-    }
-    
-    public async override Task<TEntity> FindAsync(
-        Expression<Func<TEntity, bool>> predicate,
-        bool includeDetails = true,
-        CancellationToken cancellationToken = default)
-    {
-        return includeDetails
-            ? await WithDetails()
-            	.Where(predicate)
-            	.SingleOrDefaultAsync(
-            		GetCancellationToken(cancellationToken))
-            : await DbSet
-                .Where(predicate)
-                .SingleOrDefaultAsync(
-                	GetCancellationToken(cancellationToken));
-    }
-    
-    public async override Task<List<TEntity>> GetListAsync(
-        bool includeDetails = false, 
-        CancellationToken cancellationToken = default)
-    {
-        return includeDetails
-            ? await WithDetails().ToListAsync(
-            	GetCancellationToken(cancellationToken))
-            : await DbSet.ToListAsync(
-                GetCancellationToken(cancellationToken));
-    }
-    
-    public async override Task<long> GetCountAsync(
-        CancellationToken cancellationToken = default)
-    {
-        return await DbSet.LongCountAsync(
-            GetCancellationToken(cancellationToken));
-    }
-    
-    public async override Task<List<TEntity>> GetPagedListAsync(
-        int skipCount,
-        int maxResultCount,
-        string sorting,
-        bool includeDetails = false,
-        CancellationToken cancellationToken = default)
-    {
-        var queryable = includeDetails ? WithDetails() : DbSet;
-        
-        return await queryable
-            .OrderBy(sorting)
-            .PageBy(skipCount, maxResultCount)
-            .ToListAsync(GetCancellationToken(cancellationToken));
-    }
+    }        
 }
+
 ```
 
-##### 2.3.3 EFCoreRepo(TEntity, TKey)
+##### 2.8.3 dbContext creation context
 
 ```c#
-public class EfCoreRepository<TDbContext, TEntity, TKey> 
-    : EfCoreRepository<TDbContext, TEntity>,        
-	  IEfCoreRepository<TEntity, TKey>,        
-	  ISupportsExplicitLoading<TEntity, TKey>        
-          where TDbContext : IEfCoreDbContext        
-          where TEntity : class, IEntity<TKey>
+public class DbContextCreationContext
 {
-    public EfCoreRepository(
-        IDbContextProvider<TDbContext> dbContextProvider)            
-        	: base(dbContextProvider)
-    {        
-    }                        
+    // 静态单例 dbContextCreationContext
+    private static readonly AsyncLocal<DbContextCreationContext> _current = 
+        new AsyncLocal<DbContextCreationContext>();
+    public static DbContextCreationContext Current => 
+        _current.Value;
+        
+    public DbConnection ExistingConnection { get; set; }
+    
+    // 注入 connStringName、connString
+    public string ConnectionStringName { get; }    
+    public string ConnectionString { get; }            
+    public DbContextCreationContext(
+        string connectionStringName, 
+        string connectionString)
+    {
+        ConnectionStringName = connectionStringName;
+        ConnectionString = connectionString;
+    }
+    
+    // 将传入的 dbContext create context 设置为 current
+    public static IDisposable Use(DbContextCreationContext context)
+    {
+        var previousValue = Current;
+        _current.Value = context;
+        return new DisposeAction(() => _current.Value = previousValue);
+    }
 }
 
 ```
 
-###### 2.3.3.1 delete
+##### 2.8.4 ef core database api
 
 ```c#
-public class EfCoreRepository<TDbContext, TEntity, TKey> 
+public class EfCoreDatabaseApi<TDbContext> 
+    : IDatabaseApi, 
+	  ISupportsSavingChanges        
+          where TDbContext : IEfCoreDbContext
 {
-    public virtual async Task DeleteAsync(
-        TKey id, 
-        bool autoSave = false, 
+    public TDbContext DbContext { get; }    
+    public EfCoreDatabaseApi(TDbContext dbContext)
+    {
+        DbContext = dbContext;
+    }
+    
+    public Task SaveChangesAsync(
         CancellationToken cancellationToken = default)
     {
-        var entity = await FindAsync(
-            id, 
-            cancellationToken: cancellationToken);
-        
-        if (entity == null)
-        {
-            return;
-        }
-        
-        await DeleteAsync(entity, autoSave, cancellationToken);
+        return DbContext.SaveChangesAsync(cancellationToken);
     }
 }
+
 ```
-
-###### 2.3.3.2 find
-
-```c#
-public class EfCoreRepository<TDbContext, TEntity, TKey> 
-{
-    public virtual async Task<TEntity> FindAsync(
-        TKey id, 
-        bool includeDetails = true, 
-        CancellationToken cancellationToken = default)
-    {
-        return includeDetails
-            ? await WithDetails()
-            	.FirstOrDefaultAsync(
-            		e => e.Id.Equals(id), 
-            		GetCancellationToken(cancellationToken))
-            : await DbSet.FindAsync(
-                new object[] {id}, 
-                GetCancellationToken(cancellationToken));
-    }
-}
-```
-
-###### 2.3.3.3 get
-
-```c#
-public class EfCoreRepository<TDbContext, TEntity, TKey> 
-{
-    public virtual async Task<TEntity> GetAsync(
-        TKey id, 
-        bool includeDetails = true, 
-        CancellationToken cancellationToken = default)
-    {
-        var entity = await FindAsync(
-            id, 
-            includeDetails, 
-            GetCancellationToken(cancellationToken));
-        
-        if (entity == null)
-        {
-            throw new EntityNotFoundException(typeof(TEntity), id);
-        }
-        
-        return entity;
-    }
-}
-```
-
-##### 2.3.4 entity options
-
-###### 2.3.4.1  EntityOptions
-
-```c#
-public class AbpEntityOptions
-{
-    private readonly IDictionary<Type, object> _options;    
-    public AbpEntityOptions()
-    {
-        _options = new Dictionary<Type, object>();
-    }
-    
-    public AbpEntityOptions<TEntity> GetOrNull<TEntity>()        
-        where TEntity : IEntity
-    {
-        return _options.GetOrDefault(
-            typeof(TEntity)) as AbpEntityOptions<TEntity>;
-    }
-    
-    public void Entity<TEntity>(
-        [NotNull] Action<AbpEntityOptions<TEntity>> optionsAction)
-        	where TEntity : IEntity
-    {
-        Check.NotNull(
-            optionsAction, 
-            nameof(optionsAction));
-        
-        optionsAction(_options
-            .GetOrAdd(
-                typeof(TEntity),
-                () => new AbpEntityOptions<TEntity>()) 
-            as AbpEntityOptions<TEntity>);
-    }
-}
-```
-
-###### 2.3.4.2 EntityOptions(TEntity)
-
-```c#
-public class AbpEntityOptions<TEntity>        
-    where TEntity : IEntity
-{
-    public static AbpEntityOptions<TEntity> Empty { get; } = 
-        new AbpEntityOptions<TEntity>();
-    
-    public Func<IQueryable<TEntity>, IQueryable<TEntity>> 
-        DefaultWithDetailsFunc { get; set; }
-}
-    
-```
-
-
 
 
 
