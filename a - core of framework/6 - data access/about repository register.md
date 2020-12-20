@@ -8,30 +8,38 @@
 
 ### 1. about
 
+#### 1.1 summary
+
 * abp 实现了 repository implementation 的注册
 
-#### 1.1 how designed
+#### 1.2 how designed
 
-* 扩展 service collection 的方法，
-  * 注册`<TEntity, TRepo<>ForEntity>`或者`<TEntity, TRepo<,>ForEntity`
-* commonDbContextRegisterOptions 是自动注册的 options
-  * dbContext type
-  * default repo implementation type
-  * 自动注册 flag
-* repository register base 抽象基类实现自动注册
-* register 中 `AddRepositories()` 方法
-  * 注册 options 中的 custom repos
-  * 注册 default repo 
-    * IAggregateRoot
-    * 包含在 custom repos types 中（调用过 `options.AddRepository()`方法）
-    * 标记了RegisterDefaultRepositories 标志位（调用过`options.AddRepositories()`方法）
+##### 1.2.1 common dbContext register options
+
+* 配置 abp 相关 dbContext 的 options
+  * dbContext registration options builder 是接口，
+  * common dbContext registration options 是默认实现
+  * 具体 db regist options 继承 common dbContext regist options
+
+##### 1.2.2 repos registrar base
+
+* 注册 db repo impl 的抽象基类
+* 具体 db repo impl register 继承 repos registrar base 方法
+* `registrar.AddRepositories()`是提供注册 repos 的方法
+  * 需要派生类实现：
+    * get entities types（需要注册 repo 的 entity）
+    * get repo impl type
+
+##### 1.2.3 通过 services 注册 repos
+
+* 在 registrar 派生类中使用
 
 ### 2. details
 
-#### 2.1 repo impl register
+#### 2.1 register repo impl 
 
 * 通过 service collection 注册 repository 的实现
-* 注册`<TEntity, TRepo<>ForEntity>`或者`<TEntity, TRepo<,>ForEntity`
+* 注册`<TEntity, TEntityRepo<>>`或者`<TEntity, TEntityRepo<,>`
 
 ```c#
 public static class ServiceCollectionRepositoryExtensions
@@ -152,9 +160,9 @@ public static class ServiceCollectionRepositoryExtensions
 
 ```
 
-#### 2.2 auto repo(impl) register
+#### 2.2 dbContext registration options
 
-##### 2.2.1 registration options builder
+##### 2.2.1 接口
 
 ```c#
 public interface IAbpCommonDbContextRegistrationOptionsBuilder
@@ -194,7 +202,9 @@ public interface IAbpCommonDbContextRegistrationOptionsBuilder
 
 ```
 
-##### 2.2.2 common dbContext regist options
+##### 2.2.2 实现
+
+* dbContext registrar options 抽象基类
 
 ```c#
 public abstract class AbpCommonDbContextRegistrationOptions 
@@ -206,8 +216,9 @@ public abstract class AbpCommonDbContextRegistrationOptions
     public Type OriginalDbContextType { get; }          
     public List<Type> ReplacedDbContextTypes { get; }
     
-    // repository type (service type),    
+    // default dbContext type,    
     public Type DefaultRepositoryDbContextType { get; protected set; }    
+        
     // repository implementation type
     public Type DefaultRepositoryImplementationType { get; private set; }    
     public Type DefaultRepositoryImplementationTypeWithoutKey { get; private set; }
@@ -229,10 +240,14 @@ public abstract class AbpCommonDbContextRegistrationOptions
         IServiceCollection services)
     {
         Services = services;
+        // 注入 dbContext type，
+        // 设置 ori_dbContext 和 def_dbContext = input_dbContext
         OriginalDbContextType = originalDbContextType;        
         DefaultRepositoryDbContextType = originalDbContextType;
         
+        // 创建 custom repos 容器
         CustomRepositories = new Dictionary<Type, Type>();
+        // 创建 replaced types 容器
         ReplacedDbContextTypes = new List<Type>();
     }                                                
 }
@@ -273,7 +288,7 @@ public abstract class AbpCommonDbContextRegistrationOptions
 
 ```
 
-###### 2.2.2.1 set default repo type
+###### 2.2.2.2 set default repo type
 
 * 将传入的 repo impl type 和 repo impl type wo key 设置为 default repo type
 
@@ -393,9 +408,10 @@ public abstract class AbpCommonDbContextRegistrationOptions
 
 ###### 2.2.2.5 should register repo for entity
 
-* 标记 RegisterDefaultRepositories 为True（通过AddDefaultRepositories方法）
-* entity type 实现了`IAggregateRoot`接口
-* 且 entity type 包含在`CustomRepositories`中
+* 标记 RegisterDefaultRepositories 为True（通过调用AddDefaultRepositories方法）
+* entity type 不包含在`CustomRepositories`中
+* aggregate root 默认注册
+  * include all entity 为 true，且 entity type 实现了`IAggregateRoot`接口（
 
 ```c#
 public abstract class AbpCommonDbContextRegistrationOptions 
@@ -429,9 +445,11 @@ public abstract class AbpCommonDbContextRegistrationOptions
 
 ```
 
-##### 2.2.3 repo registrar base
+#### 2.3 repos registrar
 
-* 实现 repos 自动注册的抽象基类
+* 实现 repos 自动注册
+
+##### 2.3.1 抽象基类
 
 ```c#
 public abstract class RepositoryRegistrarBase<TOptions>        
@@ -442,20 +460,16 @@ public abstract class RepositoryRegistrarBase<TOptions>
     protected RepositoryRegistrarBase(TOptions options)
     {
         Options = options;
-    }
-    
-    
-    
-    
-    
-    
-    
-    
+    }                                
 }
 
 ```
 
-###### 2.2.3.1 add repositories
+###### 2.3.1.1 add repositories
+
+* 自动注册 repos
+* registrar 向上层架构提供的服务
+* 在 services 中定义扩展方法使用
 
 ```c#
 public abstract class RepositoryRegistrarBase<TOptions>        
@@ -482,7 +496,10 @@ public abstract class RepositoryRegistrarBase<TOptions>
 
 ```
 
-###### 2.2.3.2 register default repositories
+###### 2.3.1.2 register default repositories
+
+* abp 默认注册（为 aggregate root 注册 repos）
+* 在派生类中实现 get entities 方法
 
 ```c#
 public abstract class RepositoryRegistrarBase<TOptions>        
@@ -518,7 +535,9 @@ public abstract class RepositoryRegistrarBase<TOptions>
 
 ```
 
-###### 2.2.3.3 get default repo impl type
+###### 2.3.1.3 get default repo impl type
+
+* 在派生类中实现具体方法
 
 ```c#
 public abstract class RepositoryRegistrarBase<TOptions>        
@@ -606,5 +625,14 @@ public abstract class RepositoryRegistrarBase<TOptions>
 
 ```
 
-### 3. practice
+#### 2.3.2 派生
+
+* 实现 get entities 方法
+* 实现 get repository 方法
+* 扩展 services 方法，如 add xxx db
+  * 调用 derived_registrar 的 `AddRepository()` 方法
+
+参考具体 db repos 实现
+
+
 
