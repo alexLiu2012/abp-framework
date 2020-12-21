@@ -20,16 +20,30 @@
   * 继承 common dbContext register options
 * ef core repo registrar
   * 继承 repo register base
-* 在 services 中注册 abpDbContext
-  * dbContext factory 用于创建 dbContext options并配置
+    * 实现 get entities
+    * 实现 get repo type
+* 扩展 services 的`AddAbpDbContext()`方法
+  * 注册并配置 abp dbContext options
+  * 注册 TDbContext
+  * 注册 repos（custom 和 default）
 
 ##### 1.2.2 abp dbContext
 
-* 
+* orm中间层，实现 crud 操作的地方
+* 通过 services 扩展方法`services.AddAbpDbContext<T>()`注册
+  * 注册并配置 abp dbContext register options
+  * 注册 TDbContext
+  * 注册repos
+
+##### 1.2.3 abp dbContext options
+
+##### 1.2.4 database api
+
+
 
 ### 2. details
 
-#### 2.1 注册 ef core db context
+#### 2.1 注册 ef core repo
 
 * ef core db repo 自动注册
 
@@ -138,6 +152,9 @@ public class AbpEntityOptions<TEntity>
 
 ##### 2.1.3 ef core repos registrar
 
+* 实现 get entities，
+* 实现 get repo type
+
 ```c#
 public class EfCoreRepositoryRegistrar 
     : RepositoryRegistrarBase<AbpDbContextRegistrationOptions>
@@ -204,6 +221,8 @@ internal static class DbContextHelper
 
 ##### 2.1.5 add abp (ef core) dbContext
 
+* 扩展 services 添加 abp dbContext 方法
+
 ```c#
 public static class AbpEfCoreServiceCollectionExtensions
 {
@@ -220,10 +239,12 @@ public static class AbpEfCoreServiceCollectionExtensions
             services);
         optionsBuilder?.Invoke(options);
         
-        // 注册 TDbContext
+        // 创建并注册 TDbContext options，
+        // 即自定义的 dbContext，包含具体 entity
         services.TryAddTransient(
             DbContextOptionsFactory.Create<TDbContext>);
         
+        // 用 TDbContext 替换 abp dbContext register options 中的 default dbContext
         foreach (var dbContextType in options.ReplacedDbContextTypes)
         {
             services.Replace(
@@ -232,6 +253,7 @@ public static class AbpEfCoreServiceCollectionExtensions
                     typeof(TDbContext)));
         }
         
+        // 用 abp dbContext register options 创建 ef core registrar，
         // 注册 repository 
         new EfCoreRepositoryRegistrar(options).AddRepositories();
         
@@ -243,6 +265,12 @@ public static class AbpEfCoreServiceCollectionExtensions
 
 ##### 2.1.6  dbContext options factory
 
+* 创建 dbContextOptions 的静态工厂方法，
+  * `a` (dbContext options) creation context ->
+  * 用`a`创建 `b`(dbContext options) configuration context ->
+  * 解析`c`dbContext options
+  * 用`b`配置（执行actions）`c`
+
 ```c#
 public static class DbContextOptionsFactory
 {
@@ -250,26 +278,40 @@ public static class DbContextOptionsFactory
         IServiceProvider serviceProvider)            
         	where TDbContext : AbpDbContext<TDbContext>
     {
+        // 获取 dbContext (options) creation context
         var creationContext = GetCreationContext<TDbContext>(serviceProvider);
-        
+        // 创建 dbContext (options) configuration context
         var context = new AbpDbContextConfigurationContext<TDbContext>(
             creationContext.ConnectionString,
             serviceProvider,
             creationContext.ConnectionStringName,
             creationContext.ExistingConnection            );
         
+        // 获取 dbContext options
         var options = GetDbContextOptions<TDbContext>(serviceProvider);
         
+        // pre-configure “dbContext options”
         PreConfigure(options, context);
+        // configure "dbContext options"
         Configure(options, context);
         
         return context.DbContextOptions.Options;
-    }                               
+    }  
+    
+    // 解析 abp dbContext options
+    private static AbpDbContextOptions GetDbContextOptions<TDbContext>(
+        IServiceProvider serviceProvider)        
+        	where TDbContext : AbpDbContext<TDbContext>
+    {
+        return serviceProvider
+            .GetRequiredService<IOptions<AbpDbContextOptions>>()
+            	.Value;
+    }
 }
 
 ```
 
-###### 2.1.6.1 get creation context options
+###### 2.1.6.1 get creation context
 
 ```c#
 public static class DbContextOptionsFactory
@@ -298,22 +340,9 @@ public static class DbContextOptionsFactory
 
 ```
 
-###### 2.1.6.2 get dbContext options
+###### 2.1.6.2 create configuration options
 
-```c#
-public static class DbContextOptionsFactory
-{
-    private static AbpDbContextOptions GetDbContextOptions<TDbContext>(
-        IServiceProvider serviceProvider)        
-        	where TDbContext : AbpDbContext<TDbContext>
-    {
-        return serviceProvider
-            .GetRequiredService<IOptions<AbpDbContextOptions>>()
-            	.Value;
-    }
-}
-
-```
+见2.5
 
 ###### 2.1.6.3 pre configure
 
@@ -372,7 +401,7 @@ public static class DbContextOptionsFactory
         else
         {
             throw new AbpException(
-                    $"No configuration found for {typeof(DbContext).AssemblyQualifiedName}! Use services.Configure<AbpDbContextOptions>(...) to configure it.");
+                $"No configuration found for {typeof(DbContext).AssemblyQualifiedName}! Use services.Configure<AbpDbContextOptions>(...) to configure it.");
         }
     }
 }
@@ -381,7 +410,7 @@ public static class DbContextOptionsFactory
 
 #### 2.2 ef core repo
 
-* 通过 ef core 实现的 repository
+* repository 在 ef core 下的实现
 * 内部通过 dbContext 和 dbSet 完成 crud，解耦了 db
 
 ##### 2.2.1 IEfCoreRepo 接口
@@ -415,28 +444,25 @@ public class EfCoreRepository<TDbContext, TEntity>
           where TDbContext : IEfCoreDbContext        
           where TEntity : class, IEntity
 {
+    // 转换为 ms ef core “dbContext" 和 ”dbSet”
     DbContext IEfCoreRepository<TEntity>.DbContext => 
-        DbContext.As<DbContext>();
-              
+        DbContext.As<DbContext>();              
     public virtual DbSet<TEntity> DbSet => 
         DbContext.Set<TEntity>();        
     
+    // 从 dbContextProvider 解析 TDbContext
     protected virtual TDbContext DbContext => 
         _dbContextProvider.GetDbContext();
-    
+    // 从 entityOptionsLazy 中懒加载 entity options
     protected virtual AbpEntityOptions<TEntity> AbpEntityOptions => 
         _entityOptionsLazy.Value;
     
     private readonly IDbContextProvider<TDbContext> _dbContextProvider;
-    private readonly Lazy<AbpEntityOptions<TEntity>> _entityOptionsLazy;
-    
+    private readonly Lazy<AbpEntityOptions<TEntity>> _entityOptionsLazy;    
     public virtual IGuidGenerator GuidGenerator { get; set; }
     
     public EfCoreRepository(IDbContextProvider<TDbContext> dbContextProvider)
-    {
-        // 生成 guid generator
-        GuidGenerator = SimpleGuidGenerator.Instance;
-        
+    {                
         // 注入 (abp ef core) dbContext provider
         _dbContextProvider = dbContextProvider;                
         // 懒加载 IOptions<abp entity options>.Value，
@@ -446,9 +472,12 @@ public class EfCoreRepository<TDbContext, TEntity>
             	.GetRequiredService<IOptions<AbpEntityOptions>>()
             		.Value.GetOrNull<TEntity>() 
             			?? AbpEntityOptions<TEntity>.Empty);
+        
+        // 生成 guid generator
+        GuidGenerator = SimpleGuidGenerator.Instance;
     }
     
-                                
+    // ef core 支持 IQuryable                            
     protected override IQueryable<TEntity> GetQueryable()
     {
         return DbSet.AsQueryable();
@@ -490,7 +519,8 @@ public class EfCoreRepository<TDbContext, TEntity>
 ```c#
 public class EfCoreRepository<TDbContext, TEntity> 
 {
-    // 如果是 IEntity<Guid>，设置 id
+    // 如果是 IEntity<Guid>，自动设置 id
+    // 否则需要指定 id
     protected virtual void CheckAndSetId(TEntity entity)
     {
         if (entity is IEntity<Guid> entityWithGuidId)
@@ -558,13 +588,14 @@ public class EfCoreRepository<TDbContext, TEntity>
         }
     }
     
-    // 删除符合条件的 entity
+    // 条件删除
     public async override Task DeleteAsync(
         Expression<Func<TEntity, bool>> predicate, 
         bool autoSave = false, 
         CancellationToken cancellationToken = default)
     {
-        // 获取符合条件的 entities
+        // 获取符合条件的 entities，
+        // ef core 支持 IQueryable
         var entities = await GetQueryable()
             .Where(predicate)
             .ToListAsync(GetCancellationToken(cancellationToken));
@@ -655,17 +686,19 @@ public class EfCoreRepository<TDbContext, TEntity>
 ```c#
 public class EfCoreRepository<TDbContext, TEntity> 
 {
-    // find, single or default, 不抛出异常
+    // find, single or default, 不抛出异常（但可以为 null）
     public async override Task<TEntity> FindAsync(
         Expression<Func<TEntity, bool>> predicate,
         bool includeDetails = true,
         CancellationToken cancellationToken = default)
     {
         return includeDetails
+            // 加载 entity with details，再过滤
             ? await WithDetails()
             	.Where(predicate)
             	.SingleOrDefaultAsync(
             		GetCancellationToken(cancellationToken))
+            // 加载 entity，过滤
             : await DbSet
                 .Where(predicate)
                 .SingleOrDefaultAsync(
@@ -677,39 +710,15 @@ public class EfCoreRepository<TDbContext, TEntity>
         CancellationToken cancellationToken = default)
     {
         return includeDetails
+            // 加载 entity with details
             ? await WithDetails()
             	.ToListAsync(
             		GetCancellationToken(cancellationToken))
+            // 加载 entity
             : await DbSet
                 .ToListAsync(
                 	GetCancellationToken(cancellationToken));
-    }
-    
-    public async override Task<long> GetCountAsync(
-        CancellationToken cancellationToken = default)
-    {
-        return await DbSet
-            .LongCountAsync(
-            	GetCancellationToken(cancellationToken));
-    }
-    
-    public async override Task<List<TEntity>> GetPagedListAsync(
-        int skipCount,
-        int maxResultCount,
-        string sorting,
-        bool includeDetails = false,
-        CancellationToken cancellationToken = default)
-    {
-        var queryable = includeDetails ? WithDetails() : DbSet;
-        
-        return await queryable
-            .OrderBy(sorting)
-            .PageBy(
-            	skipCount, 
-            	maxResultCount)
-            .ToListAsync(
-            	GetCancellationToken(cancellationToken));
-    }
+    }       
 }
 
 ```
@@ -788,7 +797,7 @@ public class EfCoreRepository<TDbContext, TEntity, TKey>
 public class EfCoreRepository<TDbContext, TEntity, TKey> 
 {
     // 删除特定 id 的 entity，
-    // 如果没有 entity，不抛出异常或错误
+    // 如果没有 entity，不会抛出异常或错误
     public virtual async Task DeleteAsync(
         TKey id, 
         bool autoSave = false, 
@@ -814,6 +823,8 @@ public class EfCoreRepository<TDbContext, TEntity, TKey>
 ```c#
 public class EfCoreRepository<TDbContext, TEntity, TKey> 
 {
+    // 用 id 查找，
+    // 找不到抛出异常？？
     public virtual async Task<TEntity> FindAsync(
         TKey id, 
         bool includeDetails = true, 
@@ -829,6 +840,7 @@ public class EfCoreRepository<TDbContext, TEntity, TKey>
                 GetCancellationToken(cancellationToken));
     }
 }
+
 ```
 
 ###### 2.2.3.3 get
@@ -838,6 +850,8 @@ public class EfCoreRepository<TDbContext, TEntity, TKey>
 ```c#
 public class EfCoreRepository<TDbContext, TEntity, TKey> 
 {
+    // 用 id 查找，
+    // 找不到抛出异常
     public virtual async Task<TEntity> GetAsync(
         TKey id, 
         bool includeDetails = true, 
@@ -860,6 +874,8 @@ public class EfCoreRepository<TDbContext, TEntity, TKey>
 ```
 
 #### 2.3 abp db context 接口
+
+* abp 框架统一封装的 dbContext 接口
 
 ##### 2.3.1 IEfCoreDbContext 
 
@@ -1080,8 +1096,9 @@ public class AbpEfCoreDbContextInitializationContext
 
 #### 2.4 abp db context 实现
 
-* abp 框架定义的 abpDbContext 实现
+* abp 框架定义的 abp ef core DbContext 实现
 * 扩展 ef core DbContext 功能
+* IEfCoreDbContext 的超集
 
 ```c#
 public abstract class AbpDbContext<TDbContext> 
@@ -1090,31 +1107,30 @@ public abstract class AbpDbContext<TDbContext>
 	  ITransientDependency        
           where TDbContext : DbContext
 {
+    // tenant info
+    public ICurrentTenant CurrentTenant { get; set; }
     protected virtual Guid? CurrentTenantId => 
         CurrentTenant?.Id;    
+    
+    // datafilter，
+    // 是否支持 softDelete、multiTenant
+    public IDataFilter DataFilter { get; set; }          
     protected virtual bool IsMultiTenantFilterEnabled => 
         DataFilter?.IsEnabled<IMultiTenant>() ?? false;    
     protected virtual bool IsSoftDeleteFilterEnabled => 
         DataFilter?.IsEnabled<ISoftDelete>() ?? false;
     
-    public ICurrentTenant CurrentTenant { get; set; }
-    
-    public IGuidGenerator GuidGenerator { get; set; }
-    
-    public IDataFilter DataFilter { get; set; }
-    
+    // entity changes
     public IEntityChangeEventHelper EntityChangeEventHelper { get; set; }
-    
-    public IAuditPropertySetter AuditPropertySetter { get; set; }
-    
     public IEntityHistoryHelper EntityHistoryHelper { get; set; }
-    
-    public IAuditingManager AuditingManager { get; set; }
+    // entity audit
+    public IAuditingManager AuditingManager { get; set; }          
+    public IAuditPropertySetter AuditPropertySetter { get; set; }
     
     public IUnitOfWorkManager UnitOfWorkManager { get; set; }
     
-    public IClock Clock { get; set; }
-    
+    public IGuidGenerator GuidGenerator { get; set; }            
+    public IClock Clock { get; set; }    
     public ILogger<AbpDbContext<TDbContext>> Logger { get; set; }
     
     private static readonly MethodInfo 
@@ -1262,7 +1278,7 @@ public abstract class AbpDbContext<TDbContext>
 
 ##### 2.4.1 initialize
 
-* 在创建 abp dbContext 是调用
+* 在创建 abp dbContext 时调用
 
 ```c#
 public abstract class AbpDbContext<TDbContext> 
@@ -1456,6 +1472,57 @@ public abstract class AbpDbContext<TDbContext>
 }
 
 ```
+
+###### 2.4.2.2 model builder set db provider 扩展
+
+```c#
+public static class AbpModelBuilderExtensions
+{
+    private const string ModelDatabaseProviderAnnotationKey = "_Abp_DatabaseProvider";
+    
+    public static void SetDatabaseProvider(
+        this ModelBuilder modelBuilder,
+        EfCoreDatabaseProvider databaseProvider)
+    {
+        modelBuilder.Model.SetAnnotation(
+            ModelDatabaseProviderAnnotationKey, 
+            databaseProvider);
+    }
+    
+    public static void ClearDatabaseProvider(
+        this ModelBuilder modelBuilder)
+    {
+        modelBuilder.Model.RemoveAnnotation(
+            ModelDatabaseProviderAnnotationKey);
+    }
+    
+    public static EfCoreDatabaseProvider? GetDatabaseProvider(
+        this ModelBuilder modelBuilder    )
+    {
+        return (EfCoreDatabaseProvider?) modelBuilder.Model[
+            ModelDatabaseProviderAnnotationKey];
+    }
+    
+    /* using xxxdb
+    public static void UseXxxDb(this ModelBuilder modelBuilder)
+    {
+        modelBuilder.SetDatabaseProvider(
+            EfCoreDatabaseProvider.XxxDb);
+    }
+    */
+    
+    /* is using xxxdb
+    public static bool IsUsingXxx(this ModelBuilder modelBuilder)
+    {
+        return modelBuilder.GetDatabaseProvider() == 
+            EfCoreDatabaseProvider.XxxDb;
+    }
+    */
+}
+
+```
+
+
 
 ###### 2.4.2.2 configure base properties
 
@@ -2041,47 +2108,11 @@ public abstract class AbpDbContext<TDbContext>
     }
 ```
 
+#### 2.5 abp dbContext options
 
+* abp 框架封装的统一的 dbContext options
 
-#### 2.5 注册abp db context 
-
-##### 2.5.1 abp ef core 模块
-
-```c#
-[DependsOn(typeof(AbpDddDomainModule))]
-public class AbpEntityFrameworkCoreModule : AbpModule
-{
-    public override void ConfigureServices(
-        ServiceConfigurationContext context)
-    {
-        // 注册并配置 abp dbContext options
-        Configure<AbpDbContextOptions>(options =>
-        	{
-                options.PreConfigure(
-                    abpDbContextConfigurationContext =>
-                	{
-                    	abpDbContextConfigurationContext
-                        	.DbContextOptions
-                        		.ConfigureWarnings(warnings =>
-                        		{
-                                	warnings.Ignore(
-                                    	CoreEventId
-                                        	.LazyLoadOnDisposedContextWarning);
-                                });
-                    });
-            });
-        
-        // 注册 uow dbContext provider，
-        // 暴露为 IDbContextProvider
-        context.Services.TryAddTransient(
-            typeof(IDbContextProvider<>), 
-            typeof(UnitOfWorkDbContextProvider<>));
-    }
-}
-
-```
-
-##### 2.5.2 dbcontext options
+##### 2.5.1 dbContext options
 
 ```c#
 public class AbpDbContextOptions
@@ -2143,7 +2174,11 @@ public class AbpDbContextOptions
 
 ```
 
-###### 2.5.2.1 dbContext configuration context
+##### 2.5.2 dbContext configuration context
+
+* 包裹 ms ef core DbContextOptionsBuilder 封装
+
+###### 2.5.2.1 dbContext configure context
 
 ```c#
 public class AbpDbContextConfigurationContext : IServiceProviderAccessor
@@ -2175,6 +2210,11 @@ public class AbpDbContextConfigurationContext : IServiceProviderAccessor
     }
 }
 
+```
+
+###### 2.5.2.2 dbContext configure context <T>
+
+```c#
 public class AbpDbContextConfigurationContext<TDbContext> 
     : AbpDbContextConfigurationContext    
         where TDbContext : AbpDbContext<TDbContext>
@@ -2201,14 +2241,13 @@ public class AbpDbContextConfigurationContext<TDbContext>
             			.GetRequiredService<ILoggerFactory>());
     }
 }
-
 ```
 
+#### 2.6 dbContext provider
 
+* ms ef core 使用的 dbContext
 
-#### 2.8 dbContext provider
-
-##### 2.8.1 IDbContextProvider 接口
+##### 2.6.1 IDbContextProvider 接口
 
 ```c#
 public interface IDbContextProvider<out TDbContext>        
@@ -2219,7 +2258,7 @@ public interface IDbContextProvider<out TDbContext>
 
 ```
 
-##### 2.8.2 DbContextProvider 实现
+##### 2.6.2 uow dbContext provider
 
 ```c#
 public class UnitOfWorkDbContextProvider<TDbContext> 
@@ -2240,7 +2279,7 @@ public class UnitOfWorkDbContextProvider<TDbContext>
 
 ```
 
-###### 2.8.2.1 get dbContext
+###### 2.6.2.1 get TDbContext
 
 ```c#
 public class UnitOfWorkDbContextProvider<TDbContext> 
@@ -2279,7 +2318,7 @@ public class UnitOfWorkDbContextProvider<TDbContext>
 
 ```
 
-###### 2.8.2.2 create dbContext
+###### 2.6.2.2 create TDbContext 
 
 ```c#
 public class UnitOfWorkDbContextProvider<TDbContext> 
@@ -2313,7 +2352,15 @@ public class UnitOfWorkDbContextProvider<TDbContext>
             return dbContext;
         }
     }
-    
+}
+
+```
+
+###### 2.6.2.3 create TDbContext with uow
+
+```c#
+public class UnitOfWorkDbContextProvider<TDbContext> 
+{        
     // 使用指定的 uow 创建 dbContext
     private TDbContext CreateDbContext(IUnitOfWork unitOfWork)
     {
@@ -2396,7 +2443,7 @@ public class UnitOfWorkDbContextProvider<TDbContext>
 
 ```
 
-##### 2.8.3 dbContext creation context
+##### 2.6.3 dbContext creation context
 
 ```c#
 public class DbContextCreationContext
@@ -2431,7 +2478,7 @@ public class DbContextCreationContext
 
 ```
 
-##### 2.8.4 ef core database api
+##### 2.6.4 ef core database api
 
 ```c#
 public class EfCoreDatabaseApi<TDbContext> 
@@ -2454,7 +2501,75 @@ public class EfCoreDatabaseApi<TDbContext>
 
 ```
 
+#### 2.7 注册abp db context 
 
+##### 2.7.1 abp ef core 模块
+
+```c#
+[DependsOn(typeof(AbpDddDomainModule))]
+public class AbpEntityFrameworkCoreModule : AbpModule
+{
+    public override void ConfigureServices(
+        ServiceConfigurationContext context)
+    {
+        // 注册并配置 abp dbContext options
+        Configure<AbpDbContextOptions>(options =>
+        	{
+                options.PreConfigure(
+                    abpDbContextConfigurationContext =>
+                	{
+                    	abpDbContextConfigurationContext
+                        	.DbContextOptions
+                        		.ConfigureWarnings(warnings =>
+                        		{
+                                	warnings.Ignore(
+                                    	CoreEventId
+                                        	.LazyLoadOnDisposedContextWarning);
+                                });
+                    });
+            });
+        
+        // 注册 uow dbContext provider，
+        // 暴露为 IDbContextProvider
+        context.Services.TryAddTransient(
+            typeof(IDbContextProvider<>), 
+            typeof(UnitOfWorkDbContextProvider<>));
+    }
+}
+
+```
 
 ### 3. practice
+
+#### 3.1 自定义 TDbContext
+
+* 需要定义成 DbContext 的超集，即`AbpDbContext<T>`
+
+```c#
+public class MyDbContext : AbpDbContext<MyDbContext>
+{
+    // ...
+}
+
+```
+
+#### 3.2 注册 TDbContext
+
+* 在模块中注册 
+
+```c#
+public override ConfigureService(ServiceConfigurationContext context)
+{
+    Configure<AbpDbContextOpitons>(options =>
+    	{
+            // 具体 database 的扩展方法
+        });
+    
+    context.services.AddAbpDbContext<MyDbContext>()
+    {
+        // ...
+    }
+}
+
+```
 

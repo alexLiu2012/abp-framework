@@ -20,16 +20,21 @@
   * 继承 common dbContext register options
 * memory dbContext register
   * 继承 repo register base 并实现功能
-    * get entity types（获取要自动创建 repo 的 entity）
-    * get repo type（用于创建 repo）
-* service 中添加和配置 memory dbContext register options
-* memory repo
+    * get entity types
+    * get repo type
+* service 中注入和配置 memory dbContext register options
 
-##### 1.2.2 memory dbContext
+##### 1.2.2 memory repo
+
+* repo 在 memory db 的实现
+* 没有通过 memory dbContext？？后续版本修改
+
+##### 1.2.3 memory dbContext
 
 * memory db 的抽象映射
+* 暂时没有使用
 
-##### 1.2.2 memory db
+##### 1.2.4 memory db
 
 * memory provider 获取 current  tenant 中的 database api
 * 如果没有 database api，使用 memory manager 创建 database
@@ -114,7 +119,7 @@ public class MemoryDbRepositoryRegistrar
 
 ```
 
-##### 2.1.3 add memory db (context)
+##### 2.1.3 add memory dbContext registration options
 
 ```c#
 public static class AbpMemoryDbServiceCollectionExtensions
@@ -183,6 +188,9 @@ public interface IMemoryDbRepository<TEntity, TKey>
 
 ##### 2.2.2 MemDbRepo(TEntity)
 
+* repo 在 memory db 的实现，
+* 后续版本会包裹 dbContext
+
 ```c#
 public class MemoryDbRepository<TMemoryDbContext, TEntity> 
     : RepositoryBase<TEntity>, 
@@ -190,7 +198,7 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity>
           where TMemoryDbContext : MemoryDbContext       
           where TEntity : class, IEntity
 {
-    //TODO: Add dbcontext just like mongodb implementation!
+    //TODO: Add dbcontext just like mongodb implementation!    
     
     /* memory db 底层实现服务 */
     public virtual IMemoryDatabaseCollection<TEntity> Collection => 
@@ -223,10 +231,8 @@ public class MemoryDbRepository<TMemoryDbContext, TEntity>
     protected override IQueryable<TEntity> GetQueryable()
     {
         return ApplyDataFilters(Collection.AsQueryable());
-    }
-        
-    
-                                      
+    }            
+}                                   
 ```
 
 ###### 2.2.2.1 property audit
@@ -652,7 +658,7 @@ public abstract class MemoryDbContext : ISingletonDependency
 {
     private static readonly Type[] EmptyTypeList = new Type[0];
     
-    // 需要重写
+    // 在派生类中需要重写
     public virtual IReadOnlyList<Type> GetEntityTypes()
     {
         return EmptyTypeList;
